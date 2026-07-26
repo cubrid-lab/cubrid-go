@@ -37,40 +37,40 @@ var _ driver.ConnBeginTx = (*conn)(nil)
 // connect performs the two-step CUBRID broker handshake and opens the database.
 func (c *conn) connect() error {
 	brokerAddr := fmt.Sprintf("%s:%d", c.host, c.port)
-	brokerConn, err := net.DialTimeout("tcp", brokerAddr, c.timeout) // #nosec G102 -- DB driver must dial user-provided broker address
+	brokerConn, err := net.DialTimeout("tcp", brokerAddr, c.timeout)
 	if err != nil {
 		return &OperationalError{CubridError{Code: -1,
 			Message: fmt.Sprintf("dial broker %s: %v", brokerAddr, err)}}
 	}
 
 	if c.timeout > 0 {
-		brokerConn.SetDeadline(time.Now().Add(c.timeout))
+		_ = brokerConn.SetDeadline(time.Now().Add(c.timeout))
 	}
 
 	// Step 1: send ClientInfoExchange (10 bytes, no framing header).
 	if _, err = brokerConn.Write(WriteClientInfoExchange()); err != nil {
-		brokerConn.Close()
+		_ = brokerConn.Close()
 		return err
 	}
 
 	// Step 2: receive the redirected CAS port (4 bytes).
 	portBuf := make([]byte, 4)
 	if _, err = io.ReadFull(brokerConn, portBuf); err != nil {
-		brokerConn.Close()
+		_ = brokerConn.Close()
 		return err
 	}
 	newPort := int(int32(binary.BigEndian.Uint32(portBuf)))
 	if newPort < 0 {
-		brokerConn.Close()
+		_ = brokerConn.Close()
 		return &OperationalError{CubridError{Code: newPort,
 			Message: "broker rejected connection"}}
 	}
 
 	// Step 3: if port > 0, connect to the new CAS port; if 0, reuse the broker socket.
 	if newPort > 0 {
-		brokerConn.Close()
+		_ = brokerConn.Close()
 		casAddr := fmt.Sprintf("%s:%d", c.host, newPort)
-		c.socket, err = net.DialTimeout("tcp", casAddr, c.timeout) // #nosec G102 -- DB driver must dial broker-redirected CAS address
+		c.socket, err = net.DialTimeout("tcp", casAddr, c.timeout)
 		if err != nil {
 			return &OperationalError{CubridError{Code: -1,
 				Message: fmt.Sprintf("dial CAS %s: %v", casAddr, err)}}
@@ -81,7 +81,7 @@ func (c *conn) connect() error {
 	}
 
 	if c.timeout > 0 {
-		c.socket.SetDeadline(time.Now().Add(c.timeout))
+		_ = c.socket.SetDeadline(time.Now().Add(c.timeout))
 	}
 
 	// Step 4: send OpenDatabase (628 bytes, no framing header).
@@ -101,7 +101,7 @@ func (c *conn) connect() error {
 	c.casInfo = res.CASInfo
 	c.protoVer = res.ProtocolVersion
 
-	c.socket.SetDeadline(time.Time{})
+	_ = c.socket.SetDeadline(time.Time{})
 	return nil
 }
 
@@ -225,7 +225,7 @@ func (c *conn) closeQueryHandle(qh int) {
 	if err != nil {
 		return // best-effort: ignore network errors during cleanup
 	}
-	_ = ParseSimpleResponse(resp) // #nosec G104 -- best-effort cleanup; result is intentionally discarded
+	_ = ParseSimpleResponse(resp)
 }
 
 // execSQL runs a complete SQL string via PrepareAndExecute (FC=41).
@@ -316,8 +316,8 @@ func (c *conn) Close() error {
 	c.closed = true
 	if c.socket != nil {
 		req := WriteConClose(c.casInfo)
-		c.socket.Write(req) // #nosec G104 -- best-effort write during connection close; errors are intentionally ignored
-		c.socket.Close()
+		_, _ = c.socket.Write(req)
+		_ = c.socket.Close()
 	}
 	return nil
 }
@@ -345,7 +345,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		return nil, err
 	}
 	if c.socket != nil {
-		defer c.socket.SetDeadline(time.Time{})
+		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -386,7 +386,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
 	if c.socket != nil {
-		defer c.socket.SetDeadline(time.Time{})
+		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -446,7 +446,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
 	if c.socket != nil {
-		defer c.socket.SetDeadline(time.Time{})
+		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

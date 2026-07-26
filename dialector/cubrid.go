@@ -92,25 +92,25 @@ func (d *Dialector) DefaultValueOf(field *schema.Field) clause.Expression {
 
 // BindVarTo writes a `?` placeholder.
 func (d *Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v interface{}) {
-	writer.WriteByte('?')
+	_ = writer.WriteByte('?')
 }
 
 // QuoteTo writes a CUBRID-quoted identifier using double-quotes.
 func (d *Dialector) QuoteTo(writer clause.Writer, str string) {
-	writer.WriteByte('"')
+	_ = writer.WriteByte('"')
 	if strings.Contains(str, `"`) {
 		// Escape embedded double-quotes.
 		parts := strings.Split(str, `"`)
 		for i, p := range parts {
 			if i > 0 {
-				writer.WriteString(`""`)
+				_, _ = writer.WriteString(`""`)
 			}
-			writer.WriteString(p)
+			_, _ = writer.WriteString(p)
 		}
 	} else {
-		writer.WriteString(str)
+		_, _ = writer.WriteString(str)
 	}
-	writer.WriteByte('"')
+	_ = writer.WriteByte('"')
 }
 
 // Explain returns the SQL with arguments interpolated (for logging/debugging).
@@ -209,7 +209,7 @@ func (m *Migrator) AutoMigrate(dst ...interface{}) error {
 
 // CurrentDatabase returns the name of the current database.
 func (m *Migrator) CurrentDatabase() (name string) {
-	m.DB.Raw("SELECT DATABASE()").Row().Scan(&name)
+	_ = m.DB.Raw("SELECT DATABASE()").Row().Scan(&name)
 	return
 }
 
