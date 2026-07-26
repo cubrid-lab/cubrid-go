@@ -132,12 +132,46 @@ func (c *conn) recv() ([]byte, error) {
 }
 
 // sendAndRecv sends data and returns the framed response.
+// Before sending, checks CAS_INFO status and reconnects if the broker
+// has released the CAS process — matching the official CUBRID JDBC
+// driver's UClientSideConnection.checkReconnect().
 func (c *conn) sendAndRecv(data []byte) ([]byte, error) {
-	if err := c.send(data); err != nil {
+	if err := c.checkReconnect(); err != nil {
 		return nil, err
 	}
-	return c.recv()
+	if err := c.send(data); err != nil {
+		return nil, driver.ErrBadConn
+	}
+	resp, err := c.recv()
+	if err != nil {
+		return nil, driver.ErrBadConn
+	}
+	// Update CAS_INFO from the response (first 4 bytes).
+	if len(resp) >= SizeCASInfo {
+		copy(c.casInfo[:], resp[:SizeCASInfo])
+	}
+	return resp, nil
 }
+
+// checkReconnect reconnects when the CAS has been released.
+//
+// The CUBRID broker sets CAS_INFO[0] to INACTIVE (0) when the CAS
+// process is no longer reserved for this client (KEEP_CONNECTION=AUTO).
+// The official JDBC driver checks this before every request and
+// transparently reconnects.
+func (c *conn) checkReconnect() error {
+	if c.closed || c.socket == nil {
+		return driver.ErrBadConn
+	}
+	if c.casInfo[0] == casInfoStatusInactive {
+		_ = c.socket.Close()
+		c.socket = nil
+		return c.connect()
+	}
+	return nil
+}
+
+const casInfoStatusInactive = 0
 
 func namedValuesToValues(args []driver.NamedValue) ([]driver.Value, error) {
 	values := make([]driver.Value, len(args))

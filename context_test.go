@@ -87,6 +87,7 @@ func prepareAndExecuteResponsePacket(stmtType byte, totalCount, resultCount, tup
 	body := w.toBytes()
 
 	var casInfo [SizeCASInfo]byte
+	casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 	header := buildProtocolHeader(len(body), casInfo)
 	packet := make([]byte, 0, len(header)+len(body))
 	packet = append(packet, header...)
@@ -100,6 +101,7 @@ func simpleResponsePacket(code int32) []byte {
 	body := w.toBytes()
 
 	var casInfo [SizeCASInfo]byte
+	casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 	header := buildProtocolHeader(len(body), casInfo)
 	packet := make([]byte, 0, len(header)+len(body))
 	packet = append(packet, header...)
@@ -114,6 +116,7 @@ func TestQueryContextWorksAndAppliesDeadline(t *testing.T) {
 
 	tracked := &deadlineTrackingConn{Conn: client}
 	c := &conn{socket: tracked, autoCommit: true, protoVer: ProtoVersion}
+	c.casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 
 	go func() {
 		consumeOneRequest(t, server)
@@ -147,6 +150,7 @@ func TestExecContextWorksWithDML(t *testing.T) {
 
 	tracked := &deadlineTrackingConn{Conn: client}
 	c := &conn{socket: tracked, autoCommit: true, protoVer: ProtoVersion}
+	c.casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 
 	go func() {
 		consumeOneRequest(t, server)
@@ -194,6 +198,7 @@ func TestExecContextExpiredContextReturnsImmediately(t *testing.T) {
 
 	tracked := &deadlineTrackingConn{Conn: client}
 	c := &conn{socket: tracked, autoCommit: true, protoVer: ProtoVersion}
+	c.casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
@@ -213,6 +218,7 @@ func TestQueryContextCancellationInterruptsInflightOperation(t *testing.T) {
 
 	tracked := &deadlineTrackingConn{Conn: client}
 	c := &conn{socket: tracked, autoCommit: true, protoVer: ProtoVersion}
+	c.casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 
 	requestRead := make(chan struct{})
 	go func() {
