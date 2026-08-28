@@ -54,7 +54,10 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 
 	if len(args) > 0 {
 		// Client-side interpolation: embed args into SQL, use FC=41.
-		interpolatedSQL, err := InterpolateArgs(s.query, args)
+		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
+			return nil, err
+		}
+		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +123,10 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 
 	if len(args) > 0 {
 		// Client-side interpolation: embed args into SQL, use FC=41.
-		interpolatedSQL, err := InterpolateArgs(s.query, args)
+		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
+			return nil, err
+		}
+		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
 		if err != nil {
 			return nil, err
 		}
