@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +30,11 @@ type conn struct {
 	protoVer   int
 	autoCommit bool
 	closed     bool
+	// stringEscapeMode is the negotiated no_backslash_escapes mode for this
+	// physical connection. It starts unknown and is resolved on first
+	// parameterized execution via ensureStringEscapeModeLocked. It is reset to
+	// unknown on every (re)connect. All access is guarded by mu.
+	stringEscapeMode StringEscapeMode
 }
 
 var _ driver.QueryerContext = (*conn)(nil)
@@ -100,6 +107,9 @@ func (c *conn) connect() error {
 	}
 	c.casInfo = res.CASInfo
 	c.protoVer = res.ProtocolVersion
+	// A fresh physical connection may target a server with a different
+	// no_backslash_escapes setting, so force re-negotiation on next use.
+	c.stringEscapeMode = stringEscapeModeUnknown
 
 	_ = c.socket.SetDeadline(time.Time{})
 	return nil
@@ -237,6 +247,89 @@ func (c *conn) execSQL(sql string) (*PrepareAndExecuteResult, error) {
 		return nil, err
 	}
 	return ParsePrepareAndExecute(resp, c.protoVer)
+}
+
+// ensureStringEscapeModeLocked negotiates the server's no_backslash_escapes
+// setting once per physical connection and caches it on the conn. The caller
+// MUST hold c.mu (all execution entry points do). It mirrors the CUBRID
+// JDBC/pycubrid strategy and the sibling cubrid-client driver.
+//
+// It probes with the raw, constant SQL `SELECT CHAR_LENGTH('\\')` (a literal
+// two-backslash string). The result disambiguates the mode:
+//   - result 2 -> the two backslashes are literal characters
+//     (no_backslash_escapes=yes, the CUBRID default) -> literal mode.
+//   - result 1 -> `\\` collapsed to one backslash -> backslash-escape mode.
+//
+// Any other result is treated as unknown and returned as an error rather than
+// guessed, because an incorrect mode silently corrupts every string parameter.
+func (c *conn) ensureStringEscapeModeLocked() error {
+	if c.stringEscapeMode != stringEscapeModeUnknown {
+		return nil
+	}
+
+	// NOTE: the probe SQL is a raw constant and MUST NOT be routed through the
+	// string escaper (which is exactly what we are negotiating here).
+	res, err := c.execSQL(`SELECT CHAR_LENGTH('\\')`)
+	if err != nil {
+		return err
+	}
+
+	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
+		if res.QueryHandle > 0 {
+			c.closeQueryHandle(res.QueryHandle)
+		}
+		return &OperationalError{CubridError{Code: -1,
+			Message: "cubrid: no_backslash_escapes probe returned no rows"}}
+	}
+	length, ok := probeInt(res.Rows[0][0])
+	if !ok {
+		if res.QueryHandle > 0 {
+			c.closeQueryHandle(res.QueryHandle)
+		}
+		return &OperationalError{CubridError{Code: -1,
+			Message: fmt.Sprintf("cubrid: no_backslash_escapes probe returned non-numeric value %v (%T)", res.Rows[0][0], res.Rows[0][0])}}
+	}
+
+	// Release the probe's server-side handle BEFORE recording the negotiated
+	// mode. closeQueryHandle may transparently reconnect (the autocommitted
+	// probe can leave the CAS marked INACTIVE), and connect() deliberately
+	// resets stringEscapeMode to unknown. Assigning the mode last guarantees a
+	// reconnect during cleanup cannot wipe the value we just negotiated.
+	if res.QueryHandle > 0 {
+		c.closeQueryHandle(res.QueryHandle)
+	}
+
+	switch length {
+	case 2:
+		c.stringEscapeMode = stringEscapeModeLiteralBackslash
+	case 1:
+		c.stringEscapeMode = stringEscapeModeBackslashEscapes
+	default:
+		return &OperationalError{CubridError{Code: -1,
+			Message: fmt.Sprintf("cubrid: unable to determine no_backslash_escapes mode: CHAR_LENGTH probe returned %d (expected 1 or 2); refusing to guess", length)}}
+	}
+	return nil
+}
+
+// probeInt coerces a CUBRID result cell to an int64, accepting the numeric
+// representations the driver may produce (int64 or a numeric string).
+func probeInt(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
 }
 
 // fetchLastInsertID retrieves the last auto-generated ID via SQL.
@@ -399,7 +492,10 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 
 	interpolatedSQL := query
 	if len(values) > 0 {
-		interpolatedSQL, err = InterpolateArgs(query, values)
+		if err = c.ensureStringEscapeModeLocked(); err != nil {
+			return nil, err
+		}
+		interpolatedSQL, err = InterpolateArgsWithMode(query, values, c.stringEscapeMode)
 		if err != nil {
 			return nil, err
 		}
@@ -459,7 +555,10 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 	interpolatedSQL := query
 	if len(values) > 0 {
-		interpolatedSQL, err = InterpolateArgs(query, values)
+		if err = c.ensureStringEscapeModeLocked(); err != nil {
+			return nil, err
+		}
+		interpolatedSQL, err = InterpolateArgsWithMode(query, values, c.stringEscapeMode)
 		if err != nil {
 			return nil, err
 		}

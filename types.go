@@ -8,10 +8,40 @@ import (
 	"time"
 )
 
-// InterpolateArgs replaces `?` placeholders with formatted argument literals.
-// This is used only for logging / GORM's Explain method — NOT for actual
-// query execution, which sends typed bind parameters over the wire (FC=3).
+// StringEscapeMode selects how string parameters are escaped when they are
+// interpolated into SQL literal text. CUBRID's escaping rules depend on the
+// server system parameter no_backslash_escapes, so the correct mode must be
+// negotiated per connection (see conn.ensureStringEscapeModeLocked).
+type StringEscapeMode int
+
+const (
+	// stringEscapeModeUnknown means the server mode has not been negotiated yet.
+	// It is never used for actual execution: callers must resolve a concrete
+	// mode first, because guessing wrong silently corrupts every string param.
+	stringEscapeModeUnknown StringEscapeMode = iota
+	// stringEscapeModeLiteralBackslash is the CUBRID default
+	// (no_backslash_escapes=yes): a backslash is an ordinary character and only
+	// the single quote is doubled. This is the ANSI-SQL behaviour.
+	stringEscapeModeLiteralBackslash
+	// stringEscapeModeBackslashEscapes means backslash-escape processing is
+	// active: the backslash is doubled and CR/LF are backslash-escaped, in
+	// addition to doubling the single quote.
+	stringEscapeModeBackslashEscapes
+)
+
+// InterpolateArgs replaces `?` placeholders with formatted argument literals
+// using literal-backslash (ANSI-SQL) escaping, the CUBRID default. It is kept
+// for conn-less callers such as the GORM dialector's Explain method, which
+// produce debug output rather than executed SQL. Actual query execution goes
+// through InterpolateArgsWithMode with the connection's negotiated mode.
 func InterpolateArgs(sql string, args []driver.Value) (string, error) {
+	return InterpolateArgsWithMode(sql, args, stringEscapeModeLiteralBackslash)
+}
+
+// InterpolateArgsWithMode is InterpolateArgs with an explicit escaping mode.
+// The mode must be a concrete (non-unknown) value; execution call sites resolve
+// it from the connection's negotiated no_backslash_escapes setting.
+func InterpolateArgsWithMode(sql string, args []driver.Value, mode StringEscapeMode) (string, error) {
 	placeholders := findBindPlaceholders(sql)
 	if len(placeholders) != len(args) {
 		return "", fmt.Errorf(
@@ -27,7 +57,7 @@ func InterpolateArgs(sql string, args []driver.Value) (string, error) {
 	prev := 0
 	for i, pos := range placeholders {
 		sb.WriteString(sql[prev:pos])
-		formatted, err := FormatValue(args[i])
+		formatted, err := FormatValueWithMode(args[i], mode)
 		if err != nil {
 			return "", err
 		}
@@ -92,9 +122,15 @@ func findBindPlaceholders(sql string) []int {
 	return positions
 }
 
-// FormatValue converts a driver.Value to a CUBRID SQL literal string.
-// Used by InterpolateArgs and the GORM dialector's Explain method.
+// FormatValue converts a driver.Value to a CUBRID SQL literal string using
+// literal-backslash (ANSI-SQL) escaping, the CUBRID default. Kept for conn-less
+// callers such as the GORM dialector's Explain method.
 func FormatValue(v driver.Value) (string, error) {
+	return FormatValueWithMode(v, stringEscapeModeLiteralBackslash)
+}
+
+// FormatValueWithMode is FormatValue with an explicit string-escaping mode.
+func FormatValueWithMode(v driver.Value, mode StringEscapeMode) (string, error) {
 	if v == nil {
 		return "NULL", nil
 	}
@@ -109,7 +145,11 @@ func FormatValue(v driver.Value) (string, error) {
 	case float64:
 		return strconv.FormatFloat(val, 'g', -1, 64), nil
 	case string:
-		return "'" + escapeString(val) + "'", nil
+		escaped, err := escapeString(val, mode)
+		if err != nil {
+			return "", err
+		}
+		return "'" + escaped + "'", nil
 	case []byte:
 		return "X'" + hexEncode(val) + "'", nil
 	case time.Time:
@@ -130,11 +170,39 @@ func namedValueToValue(named []driver.NamedValue) []driver.Value {
 	return out
 }
 
-// escapeString escapes single quotes and backslashes for CUBRID string literals.
-func escapeString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `''`)
-	return s
+// escapeString escapes the inner content of a CUBRID string literal (WITHOUT
+// the surrounding single quotes) according to the given escaping mode.
+//
+// NUL (0x00) and Ctrl-Z (0x1A) are ALWAYS rejected: CUBRID cannot store a NUL
+// inside a string literal, and its SQL grammar defines no safe literal escape
+// for 0x1A (there is no MySQL-style \Z). Emitting either as a raw control byte
+// would corrupt the statement, so callers must use a []byte (X'..') parameter
+// for values that may contain these bytes.
+func escapeString(s string, mode StringEscapeMode) (string, error) {
+	if strings.IndexByte(s, 0x00) >= 0 {
+		return "", &ProgrammingError{CubridError{Code: -1,
+			Message: "string parameter contains a null byte (0x00), which CUBRID cannot store in a string literal; use a []byte parameter for binary data"}}
+	}
+	if strings.IndexByte(s, 0x1A) >= 0 {
+		return "", &ProgrammingError{CubridError{Code: -1,
+			Message: "string parameter contains a Ctrl-Z byte (0x1A), which has no safe CUBRID string-literal escape; use a []byte parameter for binary data"}}
+	}
+
+	switch mode {
+	case stringEscapeModeBackslashEscapes:
+		// Escape mode: backslash introduces escape sequences.
+		s = strings.ReplaceAll(s, `\`, `\\`)
+		s = strings.ReplaceAll(s, `'`, `''`)
+		s = strings.ReplaceAll(s, "\r", "\\\r")
+		s = strings.ReplaceAll(s, "\n", "\\\n")
+		return s, nil
+	case stringEscapeModeLiteralBackslash:
+		// Literal mode (CUBRID default): only the single quote is special.
+		return strings.ReplaceAll(s, `'`, `''`), nil
+	default:
+		return "", &ProgrammingError{CubridError{Code: -1,
+			Message: "cubrid: string escaping mode not negotiated; cannot safely escape string parameter"}}
+	}
 }
 
 // hexEncode returns the lowercase hex encoding of b.

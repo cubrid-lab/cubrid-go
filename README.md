@@ -247,9 +247,30 @@ Measure under production-like load and adjust from there. If requests begin queu
 | `bool` | `0` / `1` | CUBRID has no BOOLEAN |
 | `int64` | Integer | `42` |
 | `float64` | Float | `3.14` |
-| `string` | `'escaped'` | Quotes doubled |
+| `string` | `'escaped'` | Escaped per the connection's negotiated `no_backslash_escapes` mode (see below) |
 | `[]byte` | `X'cafe'` | Hex-encoded |
 | `time.Time` | `DATETIME'...'` | Millisecond precision |
+
+#### String escaping and `no_backslash_escapes`
+
+String parameters are interpolated as SQL string literals, so they must be
+escaped according to the server's `no_backslash_escapes` system parameter. The
+driver negotiates this once per physical connection (on the first parameterized
+query) by probing with `SELECT CHAR_LENGTH('\\')` and caches the result:
+
+- **`no_backslash_escapes=yes`** (the CUBRID default): a backslash is an
+  ordinary character; only the single quote is doubled (`'` → `''`).
+- **`no_backslash_escapes=no`**: backslash-escape processing is active, so the
+  backslash is doubled and CR/LF are backslash-escaped in addition to doubling
+  the single quote.
+
+If the mode cannot be determined, the driver returns an error rather than
+guessing, because an incorrect mode would silently corrupt string data.
+
+> **Binary data**: a `string` parameter containing a NUL (`0x00`) or Ctrl-Z
+> (`0x1A`) byte is rejected — CUBRID cannot represent these safely inside a
+> string literal. Pass such values as a `[]byte` parameter (encoded as `X'..'`)
+> instead.
 
 ### CUBRID → Go (Results)
 

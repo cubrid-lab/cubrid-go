@@ -109,6 +109,57 @@ func simpleResponsePacket(code int32) []byte {
 	return packet
 }
 
+// probeResponsePacket builds a PREPARE_AND_EXECUTE response for the
+// no_backslash_escapes probe (`SELECT CHAR_LENGTH('\\')`): a single-column,
+// single-row SELECT result whose only cell is the given integer length.
+// A charLength of 2 signals literal-backslash mode; 1 signals backslash-escape.
+func probeResponsePacket(charLength int32) []byte {
+	w := newPacketWriter()
+	w.writeInt(1)           // response code == query handle (>0)
+	w.writeInt(0)           // result cache lifetime
+	w.writeByte(StmtSelect) // statement type
+	w.writeInt(0)           // bind count
+	w.writeByte(0)          // is_updatable
+	w.writeInt(1)           // column count
+	// single INTEGER column
+	w.writeByte(TypeInt)             // legacy column type (no extended-type bit)
+	w.writeShort(0)                  // scale
+	w.writeInt(0)                    // precision
+	w.writeNullTermString("charlen") // name
+	w.writeNullTermString("")        // real name
+	w.writeNullTermString("")        // table name
+	w.writeByte(1)                   // is_nullable
+	w.writeNullTermString("")        // default value
+	w.writeByte(0)                   // is_auto_increment
+	w.writeByte(0)                   // is_unique_key
+	w.writeByte(0)                   // is_primary_key
+	w.writeByte(0)                   // is_reverse_index
+	w.writeByte(0)                   // is_reverse_unique
+	w.writeByte(0)                   // is_foreign_key
+	w.writeByte(0)                   // is_shared
+	w.writeInt(1)                    // total tuple count
+	w.writeByte(0)                   // cache_reusable
+	w.writeInt(0)                    // result-info count
+	w.writeByte(0)                   // includes_column_info (proto > 1)
+	w.writeInt(0)                    // shard_id (proto > 4)
+	w.writeInt(0)                    // fetch_code
+	w.writeInt(1)                    // tuple count in this packet
+	// row 0
+	w.writeInt(0)                          // row index
+	w.writeRawBytes(make([]byte, SizeOID)) // OID
+	w.writeInt(4)                          // column value size
+	w.writeInt(charLength)                 // CHAR_LENGTH result
+	body := w.toBytes()
+
+	var casInfo [SizeCASInfo]byte
+	casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
+	header := buildProtocolHeader(len(body), casInfo)
+	packet := make([]byte, 0, len(header)+len(body))
+	packet = append(packet, header...)
+	packet = append(packet, body...)
+	return packet
+}
+
 func TestQueryContextWorksAndAppliesDeadline(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -153,6 +204,13 @@ func TestExecContextWorksWithDML(t *testing.T) {
 	c.casInfo[0] = 1 // ACTIVE – prevent checkReconnect from triggering
 
 	go func() {
+		// 1. no_backslash_escapes probe (SELECT CHAR_LENGTH('\\')) -> 2 (literal).
+		consumeOneRequest(t, server)
+		_, _ = server.Write(probeResponsePacket(2))
+		// 2. probe closes its server-side query handle.
+		consumeOneRequest(t, server)
+		_, _ = server.Write(simpleResponsePacket(0))
+		// 3. the actual UPDATE.
 		consumeOneRequest(t, server)
 		_, _ = server.Write(prepareAndExecuteResponsePacket(StmtUpdate, 2, 2, 0))
 		consumeOneRequest(t, server)
