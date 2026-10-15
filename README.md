@@ -1,11 +1,10 @@
-# cubrid-go
+<!-- CUBRID-LAB-ICON:START -->
+<p align="center">
+  <a href="https://github.com/cubrid-lab/brand"><img src="https://raw.githubusercontent.com/cubrid-lab/brand/aa62d38b48d165e39f0c56ed706a9dadb090a2bb/dist/icons/cubrid-go.svg" alt="CUBRID Lab Driver icon (Go)" width="120"></a>
+</p>
+<!-- CUBRID-LAB-ICON:END -->
 
-<!-- CUBRID-LAB-DRIVER-ICON:START -->
-<a href="https://github.com/cubrid-lab/brand">
-  <img src="https://raw.githubusercontent.com/cubrid-lab/brand/aa62d38b48d165e39f0c56ed706a9dadb090a2bb/dist/icons/cubrid-go.svg" alt="CUBRID Lab Driver icon (Go)" width="80" />
-</a>
-<p><sub>Part of <a href="https://github.com/cubrid-lab">CUBRID Lab</a> · Go Driver</sub></p>
-<!-- CUBRID-LAB-DRIVER-ICON:END -->
+# cubrid-go
 
 **Pure Go database driver for CUBRID** — `database/sql` interface + GORM dialector, no CGO required.
 
