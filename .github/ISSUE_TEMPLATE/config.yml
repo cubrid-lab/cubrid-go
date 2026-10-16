@@ -1,4 +1,4 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
   - name: CUBRID Documentation
     url: https://cubrid.org/documentation
@@ -6,6 +6,6 @@ contact_links:
   - name: GORM Documentation
     url: https://gorm.io/docs/
     about: Official GORM ORM documentation
-  - name: cubrid-cookbook
-    url: https://github.com/cubrid-labs/cubrid-cookbook
+  - name: cubrid-cookbook-python
+    url: https://github.com/cubrid-lab/cubrid-cookbook-python
     about: Production-ready examples for CUBRID with popular frameworks
