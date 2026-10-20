@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   socket and reconnects only when that check fails, as the official JDBC
   driver does. Session state, including the generated AUTO_INCREMENT id, is
   kept, and autocommit mode no longer reconnects after every statement.
+  The check is bounded by the `timeout` DSN option and the request deadline.
+  If the request is canceled during the check, the driver does not reconnect
+  or send the statement, and the connection is discarded.
 - **`no_backslash_escapes` data corruption (#27)**: String parameters were
   always escaped MySQL-style (`\` → `\\`), which corrupts data on CUBRID's
   default `no_backslash_escapes=yes` setting. The driver now negotiates the

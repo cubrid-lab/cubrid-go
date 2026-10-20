@@ -177,20 +177,7 @@ func TestCheckReconnectReconnectsWhenProbeFails(t *testing.T) {
 	}
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
-			broker, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatalf("listen: %v", err)
-			}
-			defer func() { _ = broker.Close() }()
-			dialed := make(chan struct{}, 1)
-			go func() {
-				nc, err := broker.Accept()
-				if err != nil {
-					return
-				}
-				dialed <- struct{}{}
-				_ = nc.Close() // fail the handshake; only the dial matters
-			}()
+			port, dialed := fakeBroker(t)
 
 			client, server := net.Pipe()
 			defer func() { _ = server.Close() }()
@@ -206,7 +193,7 @@ func TestCheckReconnectReconnectsWhenProbeFails(t *testing.T) {
 			c := &conn{
 				socket:  client,
 				host:    "127.0.0.1",
-				port:    broker.Addr().(*net.TCPAddr).Port,
+				port:    port,
 				timeout: time.Second,
 			}
 			if err := c.checkReconnect(); err == nil {
@@ -237,5 +224,136 @@ func TestParseCheckCas(t *testing.T) {
 	pkt := append(buildProtocolHeader(len(body), casInfo), body...)
 	if err := ParseCheckCas(pkt[SizeDataLength:]); err == nil {
 		t.Fatalf("expected an error for a negative code")
+	}
+}
+
+// fakeBroker listens for a reconnect and reports whether one was dialed. The
+// accepted connection is closed at once, failing the handshake.
+func fakeBroker(t *testing.T) (port int, dialed <-chan struct{}) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	ch := make(chan struct{}, 1)
+	go func() {
+		nc, err := l.Accept()
+		if err != nil {
+			return
+		}
+		ch <- struct{}{}
+		_ = nc.Close()
+	}()
+	return l.Addr().(*net.TCPAddr).Port, ch
+}
+
+// TestExecCanceledDuringProbeSendsNoSQL verifies that canceling the request
+// while CHECK_CAS is pending neither reconnects nor sends the SQL.
+func TestExecCanceledDuringProbeSendsNoSQL(t *testing.T) {
+	port, dialed := fakeBroker(t)
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	extra := make(chan bool, 1)
+	go func() {
+		fc, err := readRequestFunc(server)
+		if err != nil || fc != FuncCheckCas {
+			extra <- true
+			return
+		}
+		cancel() // never answer the probe
+		_ = server.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_, err = readRequestFunc(server)
+		extra <- err == nil
+	}()
+
+	c := &conn{socket: client, host: "127.0.0.1", port: port, timeout: 5 * time.Second,
+		autoCommit: true, protoVer: ProtoVersion}
+	_, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if !c.closed {
+		t.Fatalf("connection must be unusable after an interrupted probe")
+	}
+	if <-extra {
+		t.Fatalf("a request was sent after the canceled probe")
+	}
+	select {
+	case <-dialed:
+		t.Fatalf("driver reconnected after cancellation")
+	default:
+	}
+}
+
+// TestCheckReconnectStalledProbeReconnects verifies that a CAS which keeps the
+// socket open but never answers CHECK_CAS is bounded by the connection timeout
+// and replaced.
+func TestCheckReconnectStalledProbeReconnects(t *testing.T) {
+	port, dialed := fakeBroker(t)
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	go func() { _, _ = readRequestFunc(server) }() // read the probe, never answer
+
+	c := &conn{socket: client, host: "127.0.0.1", port: port, timeout: 200 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() { done <- c.checkReconnect() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected the failed reconnect handshake to surface as an error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CHECK_CAS probe was not bounded by the connection timeout")
+	}
+	select {
+	case <-dialed:
+	case <-time.After(time.Second):
+		t.Fatal("driver did not reconnect after a stalled CHECK_CAS")
+	}
+}
+
+// TestCheckCASRestoresRequestDeadline verifies that the probe uses the earlier
+// of the connection timeout and the request deadline, then restores the
+// request deadline.
+func TestCheckCASRestoresRequestDeadline(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	go func() {
+		if _, err := readRequestFunc(server); err == nil {
+			_, _ = server.Write(emptyCheckCasResponse())
+		}
+	}()
+
+	tracked := &deadlineTrackingConn{Conn: client}
+	c := &conn{socket: tracked, timeout: time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if err := c.applyContextDeadline(ctx); err != nil {
+		t.Fatalf("applyContextDeadline: %v", err)
+	}
+	requestDeadline, _ := ctx.Deadline()
+
+	if err := c.checkReconnect(); err != nil {
+		t.Fatalf("checkReconnect: %v", err)
+	}
+	calls := tracked.deadlineCalls()
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 SetDeadline calls (request, probe, restore), got %d", len(calls))
+	}
+	if !calls[1].Before(requestDeadline) || time.Until(calls[1]) > time.Second {
+		t.Fatalf("probe deadline %v not bounded by the connection timeout", calls[1])
+	}
+	if !calls[2].Equal(requestDeadline) {
+		t.Fatalf("request deadline not restored: got %v, want %v", calls[2], requestDeadline)
+	}
+
+	c.endRequest()
+	if c.reqCtx != nil || !c.reqDeadline.IsZero() {
+		t.Fatalf("endRequest did not clear the request state")
 	}
 }

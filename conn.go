@@ -35,6 +35,11 @@ type conn struct {
 	// parameterized execution via ensureStringEscapeModeLocked. It is reset to
 	// unknown on every (re)connect. All access is guarded by mu.
 	stringEscapeMode StringEscapeMode
+	// reqCtx and reqDeadline hold the context and deadline of the running
+	// QueryContext/ExecContext/BeginTx call (set by applyContextDeadline,
+	// cleared by endRequest) so checkReconnect can honor them.
+	reqCtx      context.Context
+	reqDeadline time.Time
 }
 
 var _ driver.QueryerContext = (*conn)(nil)
@@ -178,17 +183,50 @@ func (c *conn) checkReconnect() error {
 	if c.closed || c.socket == nil {
 		return driver.ErrBadConn
 	}
-	if c.casInfo[0] != casInfoStatusOutTran || c.checkCAS() {
+	if c.casInfo[0] != casInfoStatusOutTran {
+		return nil
+	}
+	alive := c.checkCAS()
+	if err := c.requestErr(); err != nil {
+		// The request was canceled or timed out during the probe. Do not
+		// reconnect or send it; a probe reply may still be in flight, so
+		// this socket can no longer be used.
+		_ = c.socket.Close()
+		c.closed = true
+		return err
+	}
+	if alive {
 		return nil
 	}
 	_ = c.socket.Close()
 	c.socket = nil
-	return c.connect()
+	if err := c.connect(); err != nil {
+		return err
+	}
+	// connect() clears the socket deadline; re-apply the request's.
+	if err := c.requestErr(); err != nil {
+		return err
+	}
+	if !c.reqDeadline.IsZero() {
+		return c.socket.SetDeadline(c.reqDeadline)
+	}
+	return nil
 }
 
 // checkCAS sends CHECK_CAS (FC=32) on the current socket and reports whether
-// the CAS answered successfully.
+// the CAS answered successfully. The probe is bounded by the connection
+// timeout and by the request deadline, whichever is earlier; the request
+// deadline is restored afterward.
 func (c *conn) checkCAS() bool {
+	probeDeadline := c.reqDeadline
+	if c.timeout > 0 {
+		if d := time.Now().Add(c.timeout); probeDeadline.IsZero() || d.Before(probeDeadline) {
+			probeDeadline = d
+		}
+	}
+	_ = c.socket.SetDeadline(probeDeadline)
+	defer func() { _ = c.socket.SetDeadline(c.reqDeadline) }()
+
 	if err := c.send(WriteCheckCas(c.casInfo)); err != nil {
 		return false
 	}
@@ -198,6 +236,20 @@ func (c *conn) checkCAS() bool {
 	}
 	copy(c.casInfo[:], resp[:SizeCASInfo])
 	return true
+}
+
+// requestErr reports whether the running request's context is done or its
+// deadline has passed.
+func (c *conn) requestErr() error {
+	if c.reqCtx != nil {
+		if err := c.reqCtx.Err(); err != nil {
+			return err
+		}
+	}
+	if !c.reqDeadline.IsZero() && !time.Now().Before(c.reqDeadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 const casInfoStatusOutTran = 0
@@ -234,14 +286,27 @@ func (c *conn) applyContextDeadline(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if c.socket == nil {
-		return nil
-	}
 	deadline, ok := ctx.Deadline()
-	if !ok {
-		return nil
+	if ok && c.socket != nil {
+		if err := c.socket.SetDeadline(deadline); err != nil {
+			return err
+		}
 	}
-	return c.socket.SetDeadline(deadline)
+	c.reqCtx = ctx
+	if ok {
+		c.reqDeadline = deadline
+	}
+	return nil
+}
+
+// endRequest clears the request context and deadline set by
+// applyContextDeadline.
+func (c *conn) endRequest() {
+	c.reqCtx = nil
+	c.reqDeadline = time.Time{}
+	if c.socket != nil {
+		_ = c.socket.SetDeadline(time.Time{})
+	}
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -456,9 +521,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if err := c.applyContextDeadline(ctx); err != nil {
 		return nil, err
 	}
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -497,9 +560,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -560,9 +621,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
