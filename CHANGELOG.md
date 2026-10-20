@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A prepared statement could run another statement after a reconnect
+  (#40)**: Prepared statement handles were sent on whatever CAS session the
+  connection had at the time. After a reconnect (for example after
+  `cubrid broker restart`), the new session could have prepared a different
+  statement under the same handle number, so executing an older statement ran
+  that one instead; a `DELETE` could run in place of an `INSERT`. The driver
+  now records which physical session created each statement and result-set
+  handle and checks it after the reconnect check and before sending. A
+  statement from an earlier session returns `driver.ErrBadConn` before anything
+  is sent, so `database/sql` prepares it again on another connection; fetching
+  from an earlier session's result set returns an `*OperationalError`; and
+  closing either sends no `CLOSE_REQ_HANDLE` on the new session.
 - **`LastInsertId()` returned 0 (#26)**: After an autocommitted statement
   the CAS reports "out of transaction", and the driver treated that as a
   released CAS and opened a new session before every following request. The

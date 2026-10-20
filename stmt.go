@@ -2,6 +2,7 @@ package cubrid
 
 import (
 	"database/sql/driver"
+	"errors"
 )
 
 // stmt is a server-side prepared statement obtained via conn.Prepare().
@@ -15,9 +16,13 @@ type stmt struct {
 	bindCount   int    // number of ? placeholders
 	columns     []ColumnMetaData
 	closed      bool
+	// generation is the conn's physical-session generation at PREPARE. The
+	// handle is valid only on that session; see conn.sendAndRecvHandle.
+	generation uint64
 }
 
-// Close releases the server-side prepared-statement handle (FC=6).
+// Close releases the server-side prepared-statement handle (FC=6). A handle
+// from an earlier physical session is dropped without sending CLOSE_REQ.
 func (s *stmt) Close() error {
 	if s.closed {
 		return nil
@@ -26,7 +31,7 @@ func (s *stmt) Close() error {
 	if s.queryHandle > 0 {
 		s.conn.mu.Lock()
 		defer s.conn.mu.Unlock()
-		s.conn.closeQueryHandle(s.queryHandle)
+		s.conn.closeQueryHandle(s.queryHandle, s.generation)
 		s.queryHandle = 0
 	}
 	return nil
@@ -68,12 +73,17 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 		// FC=41 allocates a server-side query handle; close it immediately
 		// to avoid exhausting the CAS query-entry pool (default limit: 100).
 		if paeRes.QueryHandle > 0 {
-			s.conn.closeQueryHandle(paeRes.QueryHandle)
+			s.conn.closeQueryHandle(paeRes.QueryHandle, s.conn.generation)
 		}
 	} else {
 		// No args: use the prepared handle via FC=3.
 		req := WriteExecute(s.queryHandle, s.stmtType, nil, s.conn.autoCommit, s.conn.casInfo)
-		resp, err := s.conn.sendAndRecv(req)
+		resp, err := s.conn.sendAndRecvHandle(s.generation, req)
+		if errors.Is(err, errStaleHandle) {
+			// The handle was prepared on an earlier physical session and
+			// nothing was sent; database/sql re-prepares on a fresh conn.
+			return nil, driver.ErrBadConn
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -119,6 +129,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	var fetchedRows [][]interface{}
 	var columns []ColumnMetaData
 	var qh int
+	var gen uint64
 	var ownsHandle bool
 
 	if len(args) > 0 {
@@ -139,11 +150,17 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		fetchedRows = paeRes.Rows
 		columns = paeRes.Columns
 		qh = paeRes.QueryHandle
+		gen = s.conn.generation
 		ownsHandle = true // FC=41 creates a new handle
 	} else {
 		// No args: use the prepared handle via FC=3.
 		req := WriteExecute(s.queryHandle, s.stmtType, nil, s.conn.autoCommit, s.conn.casInfo)
-		resp, err := s.conn.sendAndRecv(req)
+		resp, err := s.conn.sendAndRecvHandle(s.generation, req)
+		if errors.Is(err, errStaleHandle) {
+			// The handle was prepared on an earlier physical session and
+			// nothing was sent; database/sql re-prepares on a fresh conn.
+			return nil, driver.ErrBadConn
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -156,11 +173,13 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		fetchedRows = res.Rows
 		columns = s.columns
 		qh = s.queryHandle
+		gen = s.generation
 		ownsHandle = false
 	}
 
 	r := &rows{
 		conn:         s.conn,
+		generation:   gen,
 		queryHandle:  qh,
 		columns:      columns,
 		stmtType:     s.stmtType,
