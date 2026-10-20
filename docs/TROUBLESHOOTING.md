@@ -158,10 +158,15 @@ cubrid-go therefore never sends an old handle on a new session:
   the call succeeds without application changes.
 - A statement bound to one connection (`sql.Conn`, `sql.Tx`) cannot move to
   another connection. Prepare it again on a new connection or transaction and
-  retry.
+  retry. Close or drain any open `Rows` on that `sql.Conn` first: when a driver
+  call returns `driver.ErrBadConn`, `database/sql` closes the `sql.Conn` and
+  waits for its open `Rows`, so a call made while they are still open does not
+  return.
 - `rows.Next()` on a result set opened before the reconnect returns an
-  `*OperationalError`, because rows already read cannot be retried. Run the
-  query again.
+  `*OperationalError` when another statement on the same connection has already
+  reconnected, because rows already read cannot be retried. Without such a
+  statement the dead session is still in a transaction, so `rows.Next()` fails
+  with `driver: bad connection` instead. In both cases, run the query again.
 - `stmt.Close()` and `rows.Close()` release nothing on the new session.
 
 Statements executed with arguments send the full SQL text, not the handle, and
