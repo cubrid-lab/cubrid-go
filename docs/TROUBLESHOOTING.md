@@ -182,7 +182,7 @@ id, _ := result.LastInsertId()
 // id = 0 if the table has no AUTO_INCREMENT column
 ```
 
-> **Implementation note**: cubrid-go uses `SELECT LAST_INSERT_ID()` internally because the CAS protocol's native `GET_LAST_INSERT_ID` (FC=40) is unreliable.
+> **Implementation note**: cubrid-go reads `SELECT LAST_INSERT_ID()` on the same CAS session as the INSERT. After an autocommitted statement the driver checks the CAS with `CHECK_CAS` (FC=32) and reconnects only when that check fails, so the session that generated the id is kept.
 
 ### Numeric precision loss
 

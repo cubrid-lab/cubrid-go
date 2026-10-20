@@ -13,6 +13,7 @@ const (
 	FuncGetDbVersion      = 15
 	FuncExecuteBatch      = 20
 	FuncConClose          = 31
+	FuncCheckCas          = 32
 	FuncGetLastInsertId   = 40
 	FuncPrepareAndExecute = 41
 )

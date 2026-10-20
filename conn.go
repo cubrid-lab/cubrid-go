@@ -163,25 +163,44 @@ func (c *conn) sendAndRecv(data []byte) ([]byte, error) {
 	return resp, nil
 }
 
-// checkReconnect reconnects when the CAS has been released.
+// checkReconnect keeps the CAS session across transactions and reconnects
+// only when the CAS no longer answers.
 //
-// The CUBRID broker sets CAS_INFO[0] to INACTIVE (0) when the CAS
-// process is no longer reserved for this client (KEEP_CONNECTION=AUTO).
-// The official JDBC driver checks this before every request and
-// transparently reconnects.
+// CAS_INFO[0] is the transaction status: 0 is OUT_TRAN, 1 is IN_TRAN.
+// OUT_TRAN (for example after an autocommitted statement) does not mean the
+// CAS was released; the session, including LAST_INSERT_ID(), is still alive.
+// Because the broker may still close the socket after an OUT_TRAN reply
+// (KEEP_CONNECTION=AUTO, CAS restart), the official JDBC driver probes with
+// CHECK_CAS before the next request and reconnects only when that probe
+// fails. Reconnecting unconditionally would open a new session and lose
+// session state such as the last generated AUTO_INCREMENT id.
 func (c *conn) checkReconnect() error {
 	if c.closed || c.socket == nil {
 		return driver.ErrBadConn
 	}
-	if c.casInfo[0] == casInfoStatusInactive {
-		_ = c.socket.Close()
-		c.socket = nil
-		return c.connect()
+	if c.casInfo[0] != casInfoStatusOutTran || c.checkCAS() {
+		return nil
 	}
-	return nil
+	_ = c.socket.Close()
+	c.socket = nil
+	return c.connect()
 }
 
-const casInfoStatusInactive = 0
+// checkCAS sends CHECK_CAS (FC=32) on the current socket and reports whether
+// the CAS answered successfully.
+func (c *conn) checkCAS() bool {
+	if err := c.send(WriteCheckCas(c.casInfo)); err != nil {
+		return false
+	}
+	resp, err := c.recv()
+	if err != nil || ParseCheckCas(resp) != nil {
+		return false
+	}
+	copy(c.casInfo[:], resp[:SizeCASInfo])
+	return true
+}
+
+const casInfoStatusOutTran = 0
 
 func namedValuesToValues(args []driver.NamedValue) ([]driver.Value, error) {
 	values := make([]driver.Value, len(args))
@@ -333,7 +352,7 @@ func probeInt(v interface{}) (int64, bool) {
 }
 
 // fetchLastInsertID retrieves the last auto-generated ID via SQL.
-// FC=40 (GET_LAST_INSERT_ID) is unreliable; using SELECT LAST_INSERT_ID() instead.
+// It must run on the same CAS session as the INSERT; see checkReconnect.
 func (c *conn) fetchLastInsertID() int64 {
 	res, err := c.execSQL("SELECT LAST_INSERT_ID()")
 	if err != nil {
