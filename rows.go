@@ -2,6 +2,7 @@ package cubrid
 
 import (
 	"database/sql/driver"
+	"errors"
 	"io"
 )
 
@@ -25,6 +26,9 @@ type rows struct {
 	fetchSize    int
 	closed       bool
 	closeHandle  bool // whether Close() should send FC=6
+	// generation is the physical-session generation of queryHandle; the
+	// server cursor exists only on that session.
+	generation uint64
 }
 
 // Columns returns the column names.
@@ -46,7 +50,7 @@ func (r *rows) Close() error {
 	}
 	r.closed = true
 	if r.closeHandle && r.queryHandle > 0 {
-		r.conn.closeQueryHandle(r.queryHandle)
+		r.conn.closeQueryHandle(r.queryHandle, r.generation)
 		r.queryHandle = 0
 	}
 	return nil
@@ -69,7 +73,14 @@ func (r *rows) Next(dest []driver.Value) error {
 	}
 
 	fetchReq := WriteFetch(r.queryHandle, r.fetchedCount, r.fetchSize, r.conn.casInfo)
-	resp, err := r.conn.sendAndRecv(fetchReq)
+	resp, err := r.conn.sendAndRecvHandle(r.generation, fetchReq)
+	if errors.Is(err, errStaleHandle) {
+		// The connection reconnected since this result set was opened, so
+		// its server cursor is gone. Nothing was sent; the rows already
+		// returned cannot be retried, so report it instead of ErrBadConn.
+		return &OperationalError{CubridError{Code: -1, Message: "result set was " +
+			"opened on an earlier physical session; its server cursor no longer exists"}}
+	}
 	if err != nil {
 		return err
 	}

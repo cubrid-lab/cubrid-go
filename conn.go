@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,7 +41,18 @@ type conn struct {
 	// cleared by endRequest) so checkReconnect can honor them.
 	reqCtx      context.Context
 	reqDeadline time.Time
+	// generation identifies the physical CAS session. connect() increments
+	// it before opening a session, so a server handle (prepared statement or
+	// result set) recorded under an earlier value belongs to a session that
+	// no longer exists. The new session numbers its handles from scratch and
+	// may already use the same number for another statement, so such a
+	// handle must never be sent (see sendAndRecvHandle).
+	generation uint64
 }
+
+// errStaleHandle reports that a server handle was created on an earlier
+// physical session. It is returned before anything is sent.
+var errStaleHandle = errors.New("cubrid: server handle belongs to an earlier physical session")
 
 var _ driver.QueryerContext = (*conn)(nil)
 var _ driver.ExecerContext = (*conn)(nil)
@@ -48,6 +60,9 @@ var _ driver.ConnBeginTx = (*conn)(nil)
 
 // connect performs the two-step CUBRID broker handshake and opens the database.
 func (c *conn) connect() error {
+	// Invalidate the handles of the previous session before any new socket
+	// can be used, even if this handshake fails part way.
+	c.generation++
 	brokerAddr := fmt.Sprintf("%s:%d", c.host, c.port)
 	brokerConn, err := net.DialTimeout("tcp", brokerAddr, c.timeout)
 	if err != nil {
@@ -154,6 +169,26 @@ func (c *conn) sendAndRecv(data []byte) ([]byte, error) {
 	if err := c.checkReconnect(); err != nil {
 		return nil, err
 	}
+	return c.roundTrip(data)
+}
+
+// sendAndRecvHandle is sendAndRecv for a request that names a server handle
+// (EXECUTE, FETCH, CLOSE_REQ_HANDLE) created under generation gen. The
+// generation is compared after checkReconnect, so a reconnect triggered by
+// this very request is caught, and before anything is sent: on a mismatch it
+// returns errStaleHandle and the request never reaches the new session.
+func (c *conn) sendAndRecvHandle(gen uint64, data []byte) ([]byte, error) {
+	if err := c.checkReconnect(); err != nil {
+		return nil, err
+	}
+	if gen != c.generation {
+		return nil, errStaleHandle
+	}
+	return c.roundTrip(data)
+}
+
+// roundTrip sends data on the current socket and returns the framed response.
+func (c *conn) roundTrip(data []byte) ([]byte, error) {
 	if err := c.send(data); err != nil {
 		return nil, driver.ErrBadConn
 	}
@@ -311,13 +346,16 @@ func (c *conn) endRequest() {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-// closeQueryHandle sends FC=6 to release a server-side handle.
-// Errors are silently ignored (best-effort cleanup).
-func (c *conn) closeQueryHandle(qh int) {
+// closeQueryHandle sends FC=6 to release a server-side handle created under
+// generation gen. Errors are silently ignored (best-effort cleanup). A handle
+// from an earlier physical session is dropped without sending anything: the
+// old session's handles are already gone, and the same number on the current
+// session may belong to another statement.
+func (c *conn) closeQueryHandle(qh int, gen uint64) {
 	req := WriteCloseReqHandle(qh, c.casInfo)
-	resp, err := c.sendAndRecv(req)
+	resp, err := c.sendAndRecvHandle(gen, req)
 	if err != nil {
-		return // best-effort: ignore network errors during cleanup
+		return // best-effort: ignore stale handles and network errors
 	}
 	_ = ParseSimpleResponse(resp)
 }
@@ -357,10 +395,11 @@ func (c *conn) ensureStringEscapeModeLocked() error {
 	if err != nil {
 		return err
 	}
+	gen := c.generation
 
 	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
 		if res.QueryHandle > 0 {
-			c.closeQueryHandle(res.QueryHandle)
+			c.closeQueryHandle(res.QueryHandle, gen)
 		}
 		return &OperationalError{CubridError{Code: -1,
 			Message: "cubrid: no_backslash_escapes probe returned no rows"}}
@@ -368,7 +407,7 @@ func (c *conn) ensureStringEscapeModeLocked() error {
 	length, ok := probeInt(res.Rows[0][0])
 	if !ok {
 		if res.QueryHandle > 0 {
-			c.closeQueryHandle(res.QueryHandle)
+			c.closeQueryHandle(res.QueryHandle, gen)
 		}
 		return &OperationalError{CubridError{Code: -1,
 			Message: fmt.Sprintf("cubrid: no_backslash_escapes probe returned non-numeric value %v (%T)", res.Rows[0][0], res.Rows[0][0])}}
@@ -380,7 +419,7 @@ func (c *conn) ensureStringEscapeModeLocked() error {
 	// resets stringEscapeMode to unknown. Assigning the mode last guarantees a
 	// reconnect during cleanup cannot wipe the value we just negotiated.
 	if res.QueryHandle > 0 {
-		c.closeQueryHandle(res.QueryHandle)
+		c.closeQueryHandle(res.QueryHandle, gen)
 	}
 
 	switch length {
@@ -426,7 +465,7 @@ func (c *conn) fetchLastInsertID() int64 {
 	// FC=41 allocates a server-side query handle; close it immediately
 	// to avoid exhausting the CAS query-entry pool (default limit: 100).
 	if res.QueryHandle > 0 {
-		defer c.closeQueryHandle(res.QueryHandle)
+		defer c.closeQueryHandle(res.QueryHandle, c.generation)
 	}
 	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
 		return 0
@@ -474,6 +513,7 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 
 	return &stmt{
 		conn:        c,
+		generation:  c.generation,
 		query:       query,
 		queryHandle: res.QueryHandle,
 		stmtType:    res.StatementType,
@@ -588,12 +628,14 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		}
 		return nil, err
 	}
+	gen := c.generation
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	r := &rows{
 		conn:         c,
+		generation:   gen,
 		queryHandle:  res.QueryHandle,
 		columns:      res.Columns,
 		stmtType:     res.StatementType,
@@ -649,6 +691,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 		return nil, err
 	}
+	gen := c.generation
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -664,7 +707,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 
 	if res.QueryHandle > 0 {
-		c.closeQueryHandle(res.QueryHandle)
+		c.closeQueryHandle(res.QueryHandle, gen)
 	}
 
 	return &result{lastInsertID: lastID, rowsAffected: affected}, nil

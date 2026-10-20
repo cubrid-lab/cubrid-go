@@ -10,6 +10,7 @@ Common issues and solutions when using cubrid-go.
   - [Connection timeout](#connection-timeout)
   - [dial CAS error after broker handshake](#dial-cas-error-after-broker-handshake)
   - [Database name is required](#database-name-is-required)
+  - [Prepared statement fails after a broker restart](#prepared-statement-fails-after-a-broker-restart)
 - [Query Issues](#query-issues)
   - [Expected N bind args, got M](#expected-n-bind-args-got-m)
   - [Unsupported value type](#unsupported-value-type)
@@ -137,6 +138,39 @@ sql.Open("cubrid", "cubrid://dba@localhost:33000/demodb")
 ```
 
 ---
+
+### Prepared statement fails after a broker restart
+
+Symptoms: after `cubrid broker restart`, a CAS restart or a dropped CAS
+connection, a statement from `sql.Conn.PrepareContext` or `tx.Prepare` returns
+`driver: bad connection` or `sql: connection is already closed`, or
+`rows.Next()` stops with `result set was opened on an earlier physical session`.
+
+When the CAS stops answering, the driver opens a new CAS session on the same
+`database/sql` connection. Prepared statement handles and server cursors belong
+to the session that created them, and the new session numbers its own handles
+from the start, so an old handle number can name a different statement there.
+cubrid-go therefore never sends an old handle on a new session:
+
+- `stmt.Exec` / `stmt.Query` without arguments return `driver.ErrBadConn`
+  before anything is sent. For a statement from `db.Prepare`, `database/sql`
+  discards the connection and prepares the statement again on another one, so
+  the call succeeds without application changes.
+- A statement bound to one connection (`sql.Conn`, `sql.Tx`) cannot move to
+  another connection. Prepare it again on a new connection or transaction and
+  retry. Close or drain any open `Rows` on that `sql.Conn` first: when a driver
+  call returns `driver.ErrBadConn`, `database/sql` closes the `sql.Conn` and
+  waits for its open `Rows`, so a call made while they are still open does not
+  return.
+- `rows.Next()` on a result set opened before the reconnect returns an
+  `*OperationalError` when another statement on the same connection has already
+  reconnected, because rows already read cannot be retried. Without such a
+  statement the dead session is still in a transaction, so `rows.Next()` fails
+  with `driver: bad connection` instead. In both cases, run the query again.
+- `stmt.Close()` and `rows.Close()` release nothing on the new session.
+
+Statements executed with arguments send the full SQL text, not the handle, and
+keep working.
 
 ## Query Issues
 

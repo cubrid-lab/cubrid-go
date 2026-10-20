@@ -231,6 +231,14 @@ for _, a := range athletes {
 }
 ```
 
+> **Reconnects**: a prepared statement handle is valid only on the CAS session
+> that prepared it. If the driver reconnected since then (for example after a
+> broker restart), executing the statement without arguments returns
+> `driver.ErrBadConn` before anything is sent, and `database/sql` prepares it
+> again on another connection. A result set opened before the reconnect returns
+> an `*OperationalError` from `rows.Next()` instead of fetching. See
+> [Troubleshooting](TROUBLESHOOTING.md#prepared-statement-fails-after-a-broker-restart).
+
 ### db.Begin (Transactions)
 
 Start a transaction — auto-commit is disabled until Commit or Rollback:
