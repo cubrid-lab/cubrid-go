@@ -35,6 +35,11 @@ type conn struct {
 	// parameterized execution via ensureStringEscapeModeLocked. It is reset to
 	// unknown on every (re)connect. All access is guarded by mu.
 	stringEscapeMode StringEscapeMode
+	// reqCtx and reqDeadline hold the context and deadline of the running
+	// QueryContext/ExecContext/BeginTx call (set by applyContextDeadline,
+	// cleared by endRequest) so checkReconnect can honor them.
+	reqCtx      context.Context
+	reqDeadline time.Time
 }
 
 var _ driver.QueryerContext = (*conn)(nil)
@@ -163,25 +168,91 @@ func (c *conn) sendAndRecv(data []byte) ([]byte, error) {
 	return resp, nil
 }
 
-// checkReconnect reconnects when the CAS has been released.
+// checkReconnect keeps the CAS session across transactions and reconnects
+// only when the CAS no longer answers.
 //
-// The CUBRID broker sets CAS_INFO[0] to INACTIVE (0) when the CAS
-// process is no longer reserved for this client (KEEP_CONNECTION=AUTO).
-// The official JDBC driver checks this before every request and
-// transparently reconnects.
+// CAS_INFO[0] is the transaction status: 0 is OUT_TRAN, 1 is IN_TRAN.
+// OUT_TRAN (for example after an autocommitted statement) does not mean the
+// CAS was released; the session, including LAST_INSERT_ID(), is still alive.
+// Because the broker may still close the socket after an OUT_TRAN reply
+// (KEEP_CONNECTION=AUTO, CAS restart), the official JDBC driver probes with
+// CHECK_CAS before the next request and reconnects only when that probe
+// fails. Reconnecting unconditionally would open a new session and lose
+// session state such as the last generated AUTO_INCREMENT id.
 func (c *conn) checkReconnect() error {
 	if c.closed || c.socket == nil {
 		return driver.ErrBadConn
 	}
-	if c.casInfo[0] == casInfoStatusInactive {
+	if c.casInfo[0] != casInfoStatusOutTran {
+		return nil
+	}
+	alive := c.checkCAS()
+	if err := c.requestErr(); err != nil {
+		// The request was canceled or timed out during the probe. Do not
+		// reconnect or send it; a probe reply may still be in flight, so
+		// this socket can no longer be used.
 		_ = c.socket.Close()
-		c.socket = nil
-		return c.connect()
+		c.closed = true
+		return err
+	}
+	if alive {
+		return nil
+	}
+	_ = c.socket.Close()
+	c.socket = nil
+	if err := c.connect(); err != nil {
+		return err
+	}
+	// connect() clears the socket deadline; re-apply the request's.
+	if err := c.requestErr(); err != nil {
+		return err
+	}
+	if !c.reqDeadline.IsZero() {
+		return c.socket.SetDeadline(c.reqDeadline)
 	}
 	return nil
 }
 
-const casInfoStatusInactive = 0
+// checkCAS sends CHECK_CAS (FC=32) on the current socket and reports whether
+// the CAS answered successfully. The probe is bounded by the connection
+// timeout and by the request deadline, whichever is earlier; the request
+// deadline is restored afterward.
+func (c *conn) checkCAS() bool {
+	probeDeadline := c.reqDeadline
+	if c.timeout > 0 {
+		if d := time.Now().Add(c.timeout); probeDeadline.IsZero() || d.Before(probeDeadline) {
+			probeDeadline = d
+		}
+	}
+	_ = c.socket.SetDeadline(probeDeadline)
+	defer func() { _ = c.socket.SetDeadline(c.reqDeadline) }()
+
+	if err := c.send(WriteCheckCas(c.casInfo)); err != nil {
+		return false
+	}
+	resp, err := c.recv()
+	if err != nil || ParseCheckCas(resp) != nil {
+		return false
+	}
+	copy(c.casInfo[:], resp[:SizeCASInfo])
+	return true
+}
+
+// requestErr reports whether the running request's context is done or its
+// deadline has passed.
+func (c *conn) requestErr() error {
+	if c.reqCtx != nil {
+		if err := c.reqCtx.Err(); err != nil {
+			return err
+		}
+	}
+	if !c.reqDeadline.IsZero() && !time.Now().Before(c.reqDeadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+const casInfoStatusOutTran = 0
 
 func namedValuesToValues(args []driver.NamedValue) ([]driver.Value, error) {
 	values := make([]driver.Value, len(args))
@@ -215,14 +286,27 @@ func (c *conn) applyContextDeadline(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if c.socket == nil {
-		return nil
-	}
 	deadline, ok := ctx.Deadline()
-	if !ok {
-		return nil
+	if ok && c.socket != nil {
+		if err := c.socket.SetDeadline(deadline); err != nil {
+			return err
+		}
 	}
-	return c.socket.SetDeadline(deadline)
+	c.reqCtx = ctx
+	if ok {
+		c.reqDeadline = deadline
+	}
+	return nil
+}
+
+// endRequest clears the request context and deadline set by
+// applyContextDeadline.
+func (c *conn) endRequest() {
+	c.reqCtx = nil
+	c.reqDeadline = time.Time{}
+	if c.socket != nil {
+		_ = c.socket.SetDeadline(time.Time{})
+	}
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -333,7 +417,7 @@ func probeInt(v interface{}) (int64, bool) {
 }
 
 // fetchLastInsertID retrieves the last auto-generated ID via SQL.
-// FC=40 (GET_LAST_INSERT_ID) is unreliable; using SELECT LAST_INSERT_ID() instead.
+// It must run on the same CAS session as the INSERT; see checkReconnect.
 func (c *conn) fetchLastInsertID() int64 {
 	res, err := c.execSQL("SELECT LAST_INSERT_ID()")
 	if err != nil {
@@ -437,9 +521,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if err := c.applyContextDeadline(ctx); err != nil {
 		return nil, err
 	}
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -478,9 +560,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -541,9 +621,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	if c.socket != nil {
-		defer func() { _ = c.socket.SetDeadline(time.Time{}) }()
-	}
+	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

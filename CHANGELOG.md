@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`LastInsertId()` returned 0 (#26)**: After an autocommitted statement
+  the CAS reports "out of transaction", and the driver treated that as a
+  released CAS and opened a new session before every following request. The
+  `SELECT LAST_INSERT_ID()` lookup then ran on a new session and returned
+  NULL. The driver now checks the CAS with `CHECK_CAS` (FC=32) on the same
+  socket and reconnects only when that check fails, as the official JDBC
+  driver does. Session state, including the generated AUTO_INCREMENT id, is
+  kept, and autocommit mode no longer reconnects after every statement.
+  The check is bounded by the `timeout` DSN option and the request deadline.
+  If the request is canceled during the check, the driver does not reconnect
+  or send the statement, and the connection is discarded.
 - **`no_backslash_escapes` data corruption (#27)**: String parameters were
   always escaped MySQL-style (`\` → `\\`), which corrupts data on CUBRID's
   default `no_backslash_escapes=yes` setting. The driver now negotiates the

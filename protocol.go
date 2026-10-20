@@ -425,6 +425,25 @@ func ParseGetDbVersion(data []byte) (string, error) {
 	return reader.parseNullTermString(versionLen), nil
 }
 
+// ─── Check CAS (FC=32) ───────────────────────────────────────────────────────
+
+// WriteCheckCas returns a CHECK_CAS request packet (FC=32, no arguments).
+func WriteCheckCas(casInfo [SizeCASInfo]byte) []byte {
+	w := newPacketWriter()
+	w.writeByte(FuncCheckCas)
+	payload := w.toBytes()
+	return append(buildProtocolHeader(len(payload), casInfo), payload...)
+}
+
+// ParseCheckCas parses a CHECK_CAS response. A successful reply may carry
+// an empty body or a non-negative code; a negative code is an error.
+func ParseCheckCas(data []byte) error {
+	if len(data) < SizeCASInfo+SizeInt {
+		return nil
+	}
+	return ParseSimpleResponse(data)
+}
+
 // ─── Last Insert ID ───────────────────────────────────────────────────────────
 
 // WriteGetLastInsertId returns a GET_LAST_INSERT_ID request packet.

@@ -510,7 +510,7 @@ id, err := result.LastInsertId()
 // id = the auto-generated primary key value
 ```
 
-> **Implementation detail**: cubrid-go uses `SELECT LAST_INSERT_ID()` internally because the CAS protocol's `GET_LAST_INSERT_ID` (FC=40) is unreliable.
+> **Implementation detail**: cubrid-go reads `SELECT LAST_INSERT_ID()` on the same CAS session as the INSERT. After an autocommitted statement the driver checks the CAS with `CHECK_CAS` (FC=32) and reconnects only when that check fails, so the session that generated the id is kept.
 
 ### RowsAffected
 
