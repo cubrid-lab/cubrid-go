@@ -100,6 +100,21 @@ golangci-lint run
 
 ---
 
+## Pull Request Review and Merge Policy
+
+All contributors follow the same process regardless of whether they use
+OpenCode, Codex, Claude Code, ChatGPT, Copilot or no AI tool. Keep a PR
+focused, provide relevant tests and affected docs, and describe validations
+not performed locally. **Required GitHub Actions CI** is the authoritative
+test record for the final head; local runs are recommended but not an extra
+merge gate. Oracle, Copilot and `agent-review` may help reviewers but their
+results are advisory, not required tool-specific approvals. The responsible
+maintainer checks correctness, tests, security, maintainability, CI and
+outstanding review findings before merging. Changes affecting credentials,
+workflow write permissions or release/publishing operations receive explicit
+independent maintainer scrutiny. Existing branch protection and repository
+test commands remain unchanged.
+
 ## Pull Request Guidelines
 
 ### Before Submitting
