@@ -42,3 +42,25 @@ AI summaries.
 - `go test ./...`
 - `make vet`
 - `make test-cov`
+
+## Issue triage lifecycle
+
+New issues in this repository begin with `status: needs triage`. Issue
+templates attach the label and the `issues: opened` workflow covers external
+submissions. GitHub Actions creating issues with `GITHUB_TOKEN` must attach
+the label at creation because their own events may not retrigger the workflow.
+
+1. Review the problem, evidence/unknowns, duplicate issues and open PRs,
+   owning repository, type, scope/non-goals, acceptance and prerequisites.
+2. Compare **every open issue in this repository**, including paginated
+   results. Judge impact, urgency, known risks and blocked versus executable
+   work; do not simply sort by issue age or PR creation time.
+3. Set one `priority: critical/high/medium/low` and one existing
+   `size: XS/S/M/L/XL`. Split overlarge independent work, preserving
+   contributor ownership and existing issue acceptance criteria.
+4. Re-fetch GitHub labels and verify type, priority, size, scope and duplicate
+   disposition. Remove `status: needs triage` only after this manual review;
+   retain it while evidence or decisions are pending.
+
+No bot chooses priority or auto-completes triage. Existing security, checks
+and release safeguards remain authoritative; do not create new PR gates.
