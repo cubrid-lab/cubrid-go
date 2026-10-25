@@ -25,7 +25,7 @@ and instructions for contributing to the project.
 
 ```bash
 # Clone the repository
-git clone https://github.com/cubrid-labs/cubrid-go.git
+git clone https://github.com/cubrid-lab/cubrid-go.git
 cd cubrid-go
 
 # Download dependencies
@@ -152,6 +152,28 @@ test commands remain unchanged.
 
 ---
 
+## Repository-local issue and agent handoff
+
+Before a change, review the current Go driver behavior, this repository's
+open issues and overlapping PRs. A new issue enters `status: needs triage`;
+maintainers validate evidence, duplicates, scope, type and relative priority
+against the entire local backlog. Confirm one
+`priority: critical/high/medium/low` and one `size: XS/S/M/L/XL`, then
+read the saved labels before clearing the triage status. Priority does not
+override blocked prerequisites or required final-head CI.
+
+A human contributor may propose or implement unclaimed work without a
+mandatory AI reviewer or pre-approval. Maintainer-operated autonomous agents
+need specific authorization and an actual issue assignee for reserved work.
+Check PR ownership and coordinate before changing the same behavior.
+
+For request cancellation, prepared handles, reconnection or transaction
+changes, preserve `database/sql` semantics and include focused regression
+tests. `make test` is an offline/short check; only the CUBRID-backed
+`make integration` or the corresponding actual CI lane proves a real broker
+round trip. `make lint` skips optional golangci-lint when absent: report
+`go vet` success separately instead of claiming every optional linter ran.
+
 ## Reporting Issues
 
 When reporting a bug, please include:
@@ -168,5 +190,5 @@ For feature requests, describe the use case and expected behavior.
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/cubrid-labs/cubrid-go/discussions)
-or file an [issue](https://github.com/cubrid-labs/cubrid-go/issues).
+Open a [GitHub Discussion](https://github.com/cubrid-lab/cubrid-go/discussions)
+or file an [issue](https://github.com/cubrid-lab/cubrid-go/issues).
