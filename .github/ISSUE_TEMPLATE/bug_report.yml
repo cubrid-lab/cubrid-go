@@ -1,6 +1,6 @@
 name: Bug Report
 description: Report a bug in cubrid-go
-title: "[Bug]: "
+title: "bug: "
 labels: ["bug"]
 body:
   - type: markdown
