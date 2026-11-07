@@ -8,8 +8,9 @@ ADRs preserve **why** a consequential technical or release decision was made, th
 | --- | --- | --- |
 | [0001](0001-release-governance.md) | Release, SemVer and compatibility governance | Proposed (pending review of release policy) |
 | [0002](0002-database-correctness-evidence.md) | CUBRID correctness and failure-evidence requirements | Proposed |
+| [0003 — draft PR #61](https://github.com/cubrid-lab/cubrid-go/pull/61) | Native CUBRID architecture boundaries | Proposed in separate Draft PR; not yet accepted |
 
-The separate **CUBRID-native architecture ADR** will be proposed in the existing architecture Draft PR, after the release policy is reviewed. A draft design is not an approved decision.
+The CUBRID-native architecture ADR 0003 is already **Proposed** in [architecture Draft PR #61](https://github.com/cubrid-lab/cubrid-go/pull/61); it must not be accepted until the release-policy PR is reviewed and merged. When the architecture ADR is accepted and merged, replace the index's draft-PR link with the local ADR file link. A draft is not an approved decision.
 
 ## ADR lifecycle
 
@@ -18,7 +19,7 @@ The separate **CUBRID-native architecture ADR** will be proposed in the existing
 - **Superseded:** a new numbered ADR accepts a different decision and links back to this one. Keep historic records; do not silently rewrite the reasoning to match a later implementation.
 - **Rejected:** retained for traceability when the chosen alternative is not adopted.
 
-Create a monotonically numbered `NNNN-plain-language-topic.md` file for a **material choice** (release contract, compatibility boundary, storage/transaction model, migration policy). Do not write one for every trivial code refactor or test case. Required headings: **Status, Context, Decision, Alternatives considered, Consequences and trade-offs, Verification / acceptance criteria, References**. Explain observable impact rather than using opaque tracking identifiers as the title. Link specific source code, tests, ADRs or issues.
+Start from the [ADR template](TEMPLATE.md). Create a monotonically numbered `NNNN-plain-language-topic.md` file for a **material choice** (release contract, compatibility boundary, storage/transaction model, migration policy). Do not write one for every trivial code refactor or test case. Required headings: **Status, Context, Decision, Alternatives considered, Consequences and trade-offs, Verification / acceptance criteria, References**. Explain observable impact rather than using opaque tracking identifiers as the title. Link specific source code, tests, ADRs or issues.
 
 Release policy must be reviewed **before** progressing the separate architecture proposal to acceptance. Code-level regressions remain tracked in the existing issue backlog, and real CUBRID tests remain mandatory where the release makes database-behavior claims.
 
