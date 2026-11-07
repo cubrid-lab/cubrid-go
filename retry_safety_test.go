@@ -91,7 +91,7 @@ func TestRoundTripWriteFailureClassifiesByAcceptedBytes(t *testing.T) {
 			client, server := net.Pipe()
 			defer server.Close()
 			tracked := &injectedWriteConn{
-				Conn: client, accept: tc.accept, failure: tc.writeError,
+				Conn: client, accept: tc.accepted, failure: tc.writeError,
 			}
 			c := &conn{socket: tracked}
 			c.casInfo[0] = 1
