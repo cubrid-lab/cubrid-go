@@ -1,10 +1,10 @@
 # Design sign-off and TDD acceptance plan
 
-> **Status: Not signed off / design under review.** This plan captures *expected* test behavior, not tests already written or run. The repository release policy and ADR 0001/0002/0004 are proposed in the earlier policy PR. The native architecture ADR 0003 (for this repository, if applicable) is proposed in this design draft. No implementation, CI success, approved public API or live DB outcome is implied.
+> **Status: Not signed off / design under review.** This plan captures *expected* test behavior, not tests already written or run. The release-policy PR has **merged**, adding ADR 0001/0002/0004; those decision records retain their **Proposed** status until approved, not automatically Accepted. The native architecture ADR 0003 (for this repository, if applicable) is proposed in this design draft. No implementation, CI success, approved public API or live DB outcome is implied.
 
 ## Project setup prerequisite
 
-**ADR 0005 and the development setup guide** are proposed in the earlier release-policy PR; check [the setup documentation](https://github.com/cubrid-lab/cubrid-go/blob/docs/release-policy-before-native-design/docs/DEVELOPMENT_SETUP.md) and the manifest/CI before checking these boxes.
+**ADR 0005 and the development setup guide** were added by the merged release-policy PR (ADR status remains Proposed); check [the setup documentation](https://github.com/cubrid-lab/cubrid-go/blob/main/docs/DEVELOPMENT_SETUP.md) and the manifest/CI before checking these boxes.
 
 - [ ] **Clean checkout verified:** language-native runtime/compiler and tooling are selected with a documented developer versus published consumer support distinction.
 - [ ] **Dependency resolution verified:** Go module dependencies and database/sql CAS protocol resolve without undocumented replacement, incompatible versions, or incorrect import paths.
@@ -59,7 +59,7 @@ These are outstanding verifications, not proof of failure. Existing code and cur
 
 ## Release and implementation sequencing
 
-1. Approve the repository release policy and [TDD ADR 0004](https://github.com/cubrid-lab/cubrid-go/blob/docs/release-policy-before-native-design/docs/adr/0004-test-first-development.md) in the release-policy PR.
+1. Approve the repository release policy and [TDD ADR 0004](https://github.com/cubrid-lab/cubrid-go/blob/main/docs/adr/0004-test-first-development.md) in the release-policy PR.
 2. Resolve the above design/feasibility blockers with evidence, review [native driver proposal](GO_NATIVE_DRIVER_DESIGN.md), and explicitly accept the architecture/contract ADR when applicable.
 3. Implement each scoped issue with test-first evidence, one observable contract at a time. No implementation-wide PR before essential extension feasibility.
 4. Run real CUBRID and downstream consumer tests on the final release candidate; document exact versions and test counts; do not publish based on mocks alone.
