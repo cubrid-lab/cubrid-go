@@ -4,16 +4,9 @@
 
 cubrid-go owns the Go database/sql CAS driver. Correctness requirements follow Go database/sql/driver interfaces, physical CAS sessions, Go module imports, context cancellation, and real CUBRID tests. Use this repository's implementation, public API, relevant live-CUBRID evidence and official CUBRID/JDBC results as appropriate; never assume that another language's driver or ORM test result establishes behavior here.
 
-## Why these invariants exist
+## Why this repository requires explicit evidence
 
-The Python driver and SQLAlchemy dialect revealed that a passing query or green offline suite is not enough. Bugs occurred around transaction boundaries, CAS session replacement, stale handles, partial fetches, value fidelity, state transitions, unsupported SQL and skipped live tests. They also established reusable **methods**: protocol fixtures, modeled lifecycle tests, JDBC/driver differential cases, explicit failure modes, catalog/DDL tests, and candidate-SHA evidence. **Do not port Python API shapes, source code, or version rules into another language.**
-
-Useful concrete sources:
-- [pycubrid CAS reconnect architecture](https://github.com/cubrid-lab/pycubrid/blob/main/docs/ARCHITECTURE.md#cas-reconnection), [session persistence tests](https://github.com/cubrid-lab/pycubrid/blob/main/tests/test_cas_session_persistence.py), [cursor ownership tests](https://github.com/cubrid-lab/pycubrid/blob/main/tests/test_autocommit_handle_ownership.py)
-- [pycubrid connection state-machine tests](https://github.com/cubrid-lab/pycubrid/blob/main/tests/test_connection_state_machine.py), [official-driver differential cases](https://github.com/cubrid-lab/pycubrid/blob/main/tests/test_official_differential.py)
-- [SQLAlchemy CUBRID architecture](https://github.com/cubrid-lab/sqlalchemy-cubrid/blob/main/docs/ARCHITECTURE.md), [transactional DDL tests](https://github.com/cubrid-lab/sqlalchemy-cubrid/blob/main/test/test_transactional_ddl.py), [live integration gate tests](https://github.com/cubrid-lab/sqlalchemy-cubrid/blob/main/test/test_integration_gate.py), [release-note formatting](https://github.com/cubrid-lab/sqlalchemy-cubrid/blob/main/docs/RELEASE_NOTES_STYLE.md)
-
-**Evidence rule:** the Python code/tests are counterexamples and research references, not proof of the corresponding Go, Rust or TypeScript behavior. Every native implementation must demonstrate its own actual behavior on a real CUBRID server.
+cubrid-go must verify its own published interface, negative and failure paths, tested CUBRID server behavior, and actual dependency or consumer results. Other repositories' tests or release status cannot replace those checks.
 
 ## Go `database/sql` driver invariants
 
