@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Prevent duplicated writes after a lost CAS response (#41):** A request
+  accepted by the socket can already have executed at the server even if
+  CUBRID drops the reply. `roundTrip` now returns a non-retriable
+  `*OperationalError` and retires the physical session for a lost reply
+  or a partially sent request. Only a write that accepted zero request
+  bytes can return `driver.ErrBadConn` for `database/sql` to retry.
+  Deterministic fake-CAS regressions cover lost replies, zero-byte
+  writes, partial writes and unexpected short writes.
 - **A prepared statement could run another statement after a reconnect
   (#40)**: Prepared statement handles were sent on whatever CAS session the
   connection had at the time. After a reconnect (for example after

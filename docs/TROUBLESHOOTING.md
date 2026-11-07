@@ -139,6 +139,29 @@ sql.Open("cubrid", "cubrid://dba@localhost:33000/demodb")
 
 ---
 
+### An INSERT failed after send and its outcome is unknown
+
+When a request has reached the CUBRID CAS but its reply is lost (network
+reset, broker crash or timeout), the database **may already have executed**
+the SQL. Replaying the same INSERT/UPDATE/DELETE could modify data twice.
+The driver therefore returns an `*OperationalError` explaining that the
+outcome is unknown and marks the physical connection unusable. It does
+**not** return `driver.ErrBadConn` after a successful or partial send,
+because `database/sql` can automatically retry that sentinel.
+
+A write that accepted **zero bytes** before failing may return
+`driver.ErrBadConn` so `database/sql` can safely retry on a fresh
+connection. This distinction is about what the *socket accepted*, not
+proof of transaction commit. For a business operation whose execution
+status is unknown, inspect authoritative application state or use a
+transaction/idempotency key before a manual retry. Do **not** blindly
+resend a write based only on its error. A later, separate operation can
+use a fresh connection.
+
+The failure classification is covered by fake-CAS regression tests and
+the regular integration matrix; a genuine interrupted write on a live
+broker is still a separate failure-injection test.
+
 ### Prepared statement fails after a broker restart
 
 Symptoms: after `cubrid broker restart`, a CAS restart or a dropped CAS

@@ -42,6 +42,9 @@ jobs:
         run: go mod download
       - name: Run tests
         run: go test -v -short -coverprofile=coverage.out ./...
+      - name: Run race detector on the latest tested Go version
+        if: matrix.go-version == '1.22'
+        run: go test -race -short ./...
       - name: Show coverage
         run: go tool cover -func=coverage.out
 
