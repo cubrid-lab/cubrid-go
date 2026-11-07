@@ -37,4 +37,4 @@ Useful concrete sources:
 - [CAS reconnect #20](https://github.com/cubrid-lab/cubrid-go/issues/20), [cancel deadline #39](https://github.com/cubrid-lab/cubrid-go/issues/39), [ambiguous ErrBadConn #41](https://github.com/cubrid-lab/cubrid-go/issues/41), [stale handles #43](https://github.com/cubrid-lab/cubrid-go/issues/43)
 - [real DB release gate #63](https://github.com/cubrid-lab/cubrid-go/issues/63), [Go module policy #57](https://github.com/cubrid-lab/cubrid-go/issues/57)
 
-This checklist does not make the old or new GORM dialector interchangeable. Follow [release policy](RELEASE_POLICY.md) and [native Go architecture proposal](GO_NATIVE_DRIVER_DESIGN.md) only after reviewed and merged.
+This checklist does not make the old or new GORM dialector interchangeable. Follow [release policy](RELEASE_POLICY.md) before approving the [native Go architecture draft PR #61](https://github.com/cubrid-lab/cubrid-go/pull/61).
