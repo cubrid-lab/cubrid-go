@@ -4,7 +4,7 @@
 
 ## Foundation: CUBRID semantics, Go interfaces
 
-`cubrid-go` is a pure-Go CAS-protocol driver exposed through Go's `database/sql` and `database/sql/driver`. Its users should not have to learn Python DB-API or use a MySQL compatibility mode. The separation of `pycubrid` (driver) and `sqlalchemy-cubrid` (ORM integration) provides an **ownership model**, not code or API to port.
+`cubrid-go` is a pure-Go CAS-protocol driver exposed through Go's `database/sql` and `database/sql/driver`. Its API follows Go `database/sql` conventions rather than a foreign database API or MySQL compatibility layer. The driver itself owns physical CAS transport, while ORM generation remains outside its module's responsibility.
 
 Only CUBRID's documented and live-verified SQL and CAS semantics determine driver behavior. It is reasonable to study other CUBRID connectors for protocol research and differential evidence; use Go standard-library interfaces and errors as the public API design authority.
 
@@ -55,7 +55,7 @@ uninitialized -> broker handshake -> CAS assigned -> database session ready
                                                 if safe         never replay
 ```
 
-Explicitly specify how `CHECK_CAS`, broker redirect, session reset, autocommit, prepared statements, open result handles and transaction state interact. This should share **invariants**, not source code, with pycubrid's documented reconnect rules.
+Explicitly specify how `CHECK_CAS`, broker redirect, session reset, autocommit, prepared statements, open result handles and transaction state interact. Verify these invariants against this driver's current code and observed CUBRID broker responses.
 
 ## Testing and release requirements
 
