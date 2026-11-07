@@ -6,6 +6,10 @@
 
 Review [the repository-specific engineering invariants](ENGINEERING_INVARIANTS.md) before accepting behavioral CUBRID changes or declaring database compatibility. The checklist is based on actual pycubrid/sqlalchemy-cubrid failure regressions, translated into this repository's native interfaces. **Written review rules are not executable checks**: the real-CUBRID release gate below remains mandatory, and any missing test coverage is tracked as implementation work rather than claimed complete.
 
+## Reproducible development setup prerequisite
+
+[Setup ADR 0005](adr/0005-development-setup.md) and the [language-specific development setup guide](DEVELOPMENT_SETUP.md) define the pre-implementation environment contract. A release candidate must be built from a clean checkout with the reviewed manifest and supported compiler/runtime, and must verify the **actual distributed artifact** independently of local workspace source. Setup ready, offline tests passed, live CUBRID verified, and registry publication confirmed are distinct outcomes. Document missing lint config, non-resolving module/crate dependency or absent integration harness as **blocking/unverified**, not green. A passing unit suite cannot waive the candidate's real-database gate. Changing the minimum supported consumer runtime/module path/MSRV is separately reviewed for SemVer impact; no such change is authorized by this setup documentation.
+
 ## Version numbers
 
 Use SemVer for **each publicly distributed package/module/crate**. A compatibility-generation relationship between the CUBRID driver and its ORM adapter does not override an individual package's SemVer contract.
