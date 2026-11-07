@@ -1,0 +1,18 @@
+# Local developer artifacts (not part of public Go module)
+.env
+.env.*
+!.env.example
+coverage.out
+coverage.html
+*.coverprofile
+*.prof
+*.pprof
+*.test
+/bin/
+/dist/
+*.log
+
+# IDE and local OS state
+.idea/
+.vscode/
+.DS_Store
