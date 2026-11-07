@@ -414,6 +414,10 @@ Yes. Use `db.Begin()` to start a transaction, then `tx.Commit()` or `tx.Rollback
 
 Yes. The GORM dialector supports `AutoMigrate` for creating and updating table schemas.
 
+## Development setup
+
+Use the [development setup guide](docs/DEVELOPMENT_SETUP.md) for the actual language-specific toolchain, clean dependency install, offline tests, **real CUBRID integration readiness** and known setup blockers. The [ADR index](docs/adr/README.md) records proposed release, architecture, TDD and setup decisions. Documentation alone is not a claim that those tests have run or that an unverified runtime/database version is supported.
+
 ## Ecosystem
 
 | Package | Description |
