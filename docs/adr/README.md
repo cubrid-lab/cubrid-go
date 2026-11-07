@@ -10,6 +10,7 @@ ADRs preserve **why** a consequential technical or release decision was made, th
 | [0002](0002-database-correctness-evidence.md) | CUBRID correctness and failure-evidence requirements | Proposed |
 | [0003 — draft PR #61](https://github.com/cubrid-lab/cubrid-go/pull/61) | Native CUBRID architecture boundaries | Proposed in separate Draft PR; not yet accepted |
 | [0004](0004-test-first-development.md) | TDD: design contract, Red–Green–Refactor and live-CUBRID verification | Proposed |
+| [0005](0005-development-setup.md) | Reproducible language-native developer setup and verification | Proposed |
 
 The CUBRID-native architecture ADR 0003 is already **Proposed** in [architecture Draft PR #61](https://github.com/cubrid-lab/cubrid-go/pull/61); it must not be accepted until the release-policy PR is reviewed and merged. When the architecture ADR is accepted and merged, replace the index's draft-PR link with the local ADR file link. A draft is not an approved decision.
 
