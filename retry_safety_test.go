@@ -14,9 +14,9 @@ import (
 // the accepted prefix without receiving the remaining request bytes.
 type injectedWriteConn struct {
 	net.Conn
-	accept int
+	accept  int
 	failure error
-	writes int
+	writes  int
 }
 
 func (c *injectedWriteConn) Write(data []byte) (int, error) {
