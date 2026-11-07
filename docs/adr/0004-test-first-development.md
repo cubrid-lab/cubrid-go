@@ -7,7 +7,7 @@
 
 ## Context
 
-Python driver and SQLAlchemy development surfaced errors that ordinary success-only tests did not catch: broker session life, uncertain execution, stale cursor handles, transaction/DDL rollback and precision/type fidelity. The project will complete its interface, behavioral and release design **before broad implementation**, then use Test-Driven Development (TDD) to prevent regressions in each small feature.
+This repository needs targeted failure-path tests for its own go.mod, Go semantic import versioning, database/sql behavior, and real CUBRID tests; success-only tests cannot establish behavior for broker failures, transaction boundaries, and value fidelity. The project will complete its interface, behavioral and release design **before broad implementation**, then use Test-Driven Development (TDD) to prevent regressions in each small feature.
 
 TDD is not proof of CUBRID compatibility by itself. Code-level mocks and failing unit tests cannot replace actual broker/database execution. A newly written test that passes on today's code does not demonstrate a successful Red step; a failing test must fail for the **intended behavioral reason**.
 
@@ -35,7 +35,7 @@ Tests should distinguish independently verified JDBC/official-driver semantics f
 
 ## Alternatives considered
 
-- **Rejected:** Implement the full driver/ORM first, then add tests to match whatever the code does; this risks normalizing incorrect behavior.
+- **Rejected:** Implement the full implementation first, then add tests to match whatever the code does; this risks normalizing incorrect behavior.
 - **Rejected:** Only unit-test generated SQL or mock the database and label the whole feature production-ready; actual CUBRID runtime semantics remain unverified.
 - **Rejected:** Demand a permanently red test in the final PR or one commit per TDD stage; it breaks final CI and does not establish correctness.
 - **Rejected:** Force live database jobs for every pure-document change; reserve mandatory full DB matrix for relevant behavioral work and release candidates.
