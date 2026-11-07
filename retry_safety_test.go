@@ -101,6 +101,9 @@ func TestRoundTripWriteFailureClassifiesByAcceptedBytes(t *testing.T) {
 				go func() {
 					got := make([]byte, tc.accepted)
 					_, _ = io.ReadFull(server, got)
+					// Close after the accepted prefix so a buggy short-write
+					// implementation cannot hang forever waiting for a reply.
+					_ = server.Close()
 					seen <- got
 				}()
 			}
