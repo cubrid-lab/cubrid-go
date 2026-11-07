@@ -40,8 +40,8 @@ jobs:
           PY
       - name: Update only existing GitHub Release descriptions
         env:
-          GH_${{ github.token }}: TOKEN
-          GH_${{ github.repository }}: REPO
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
