@@ -16,7 +16,7 @@ Create targeted tests for this project's observable contracts. Record whether te
 
 ## Alternatives considered
 
-- **Rejected:** Porting the Python DB-API class shape; returning ErrBadConn for any mid-response EOF; treating *sql.DB as a physical connection; inferring all DB version support from 11.0 and 11.2 tests.
+- **Rejected:** Replacing Go's database/sql API with unrelated interfaces; returning ErrBadConn for any mid-response EOF; treating *sql.DB as a physical connection; inferring all DB version support from 11.0 and 11.2 tests.
 - **Rejected:** Treating another package's API, implementation, or test results as this project's contract.
 - **Rejected:** Marking an unsupported/unverified feature as absent simply because one server or connector failed in a particular test.
 
