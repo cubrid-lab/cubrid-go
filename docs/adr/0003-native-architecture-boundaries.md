@@ -9,7 +9,7 @@
 
 cubrid-go implements CAS communication through database/sql and also includes an in-driver GORM dialector, while gorm-cubrid is a standalone GORM project. database/sql may retry ErrBadConn, so ambiguous execution and session ownership are critical. The existing public module path differs from the GitHub repository owner; migration cannot be assumed safe.
 
-The CUBRID Python driver and SQLAlchemy dialect provide engineering lessons about protocol, SQL and transaction correctness, **not** implementations or cross-language public APIs to copy.
+This decision is grounded in cubrid-go's own public interfaces, repository code, and CUBRID correctness requirements. External implementations cannot substitute for local validation.
 
 ## Decision
 
@@ -17,7 +17,7 @@ Keep the Go CAS driver focused on database/sql/driver, including physical broker
 
 ## Alternatives considered
 
-Port pycubrid DB-API shape into Go (rejected); maintain duplicate GORM implementations without a canonical owner (rejected as long-term direction); remove existing in-driver dialect immediately (rejected due to unknown consumer impact); copy MySQL's GORM grammar (rejected as correctness oracle).
+Port an unrelated driver's API into Go (rejected); maintain duplicate GORM implementations without a canonical owner (rejected as long-term direction); remove existing in-driver dialect immediately (rejected due to unknown consumer impact); copy MySQL's GORM grammar (rejected as correctness oracle).
 
 ## Consequences and trade-offs
 
