@@ -6,18 +6,18 @@
 
 ## Context
 
-The CUBRID Python driver and its SQLAlchemy dialect revealed that apparently successful queries can hide transaction-scope mistakes, accidental retries after uncertain execution, stale broker handles, precision loss and unverified ORM-generated SQL. The purpose of learning from them is to **reuse verified invariants and test design**, never Python API signatures or implementation code. The current repository has its own runtime, public API and released compatibility obligations.
+cubrid-go owns the Go database/sql CAS driver. This project's correctness decisions must cover Go database/sql/driver interfaces, physical CAS sessions, Go module imports, context cancellation, and real CUBRID tests, including negative and failure-path behavior. Passing offline tests alone is not proof of database compatibility. The accepted public API, local implementation, and actual CUBRID server behavior are the basis for requirements and test evidence.
 
 ## Decision
 
 Follow Go database/sql/driver contracts and classify connection errors with database/sql's retry behavior in mind. In particular, only use driver.ErrBadConn when a statement is known not to have reached the server; do not allow implicit replay after a possible execution. Keep CAS session and statement/row handles tied to a physical connection; a successful END_TRAN/OUT_TRAN does not imply reconnection. Use context.Context safely, preserve numeric precision and typed scan results, and test race/cancellation plus live CUBRID recovery semantics.
 
-Use source-linked test cases as engineering references, then implement targeted **native-language** regression tests. Identify whether a test actually talked to CUBRID, which server/broker and client/ORM versions were used, what SQL/outcome was asserted, and whether any required case was skipped. The fact that a Python project passes its tests does **not** certify this package.
+Create targeted tests for this project's observable contracts. Record whether tests actually communicated with CUBRID, the server/broker and dependency versions, asserted SQL outcomes, and skipped cases. External test results never certify this package.
 
 ## Alternatives considered
 
 - **Rejected:** Porting the Python DB-API class shape; returning ErrBadConn for any mid-response EOF; treating *sql.DB as a physical connection; inferring all DB version support from 11.0 and 11.2 tests.
-- **Rejected:** A generic cross-language implementation copied verbatim from Python.
+- **Rejected:** Treating another package's API, implementation, or test results as this project's contract.
 - **Rejected:** Marking an unsupported/unverified feature as absent simply because one server or connector failed in a particular test.
 
 ## Consequences and trade-offs
