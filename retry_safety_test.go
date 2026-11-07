@@ -76,10 +76,10 @@ func TestRoundTripReadFailureAfterSentInsertMustNotBeRetried(t *testing.T) {
 
 func TestRoundTripWriteFailureClassifiesByAcceptedBytes(t *testing.T) {
 	tests := []struct {
-		name              string
-		accepted          int
-		writeError        error
-		wantSafeRetry     bool
+		name          string
+		accepted      int
+		writeError    error
+		wantSafeRetry bool
 	}{
 		{"nothing sent", 0, io.ErrClosedPipe, true},
 		{"partially sent", 4, io.ErrUnexpectedEOF, false},
