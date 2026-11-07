@@ -187,14 +187,42 @@ func (c *conn) sendAndRecvHandle(gen uint64, data []byte) ([]byte, error) {
 	return c.roundTrip(data)
 }
 
-// roundTrip sends data on the current socket and returns the framed response.
+// retireTransport marks an interrupted physical CAS session unusable. The
+// caller holds c.mu in all production request paths. A new database/sql
+// connection may be opened for a later operation, but this session must never
+// be used to replay an ambiguous request.
+func (c *conn) retireTransport() {
+	c.closed = true
+	if c.socket != nil {
+		_ = c.socket.Close()
+	}
+}
+
+// roundTrip sends a single CAS request and reads its framed response.
+//
+// database/sql is permitted to transparently retry driver.ErrBadConn. That
+// sentinel is safe only when the Write accepted zero bytes of the request.
+// After any request bytes were accepted, the CAS might have executed the SQL,
+// even if the reply was lost; returning ErrBadConn could duplicate a write.
 func (c *conn) roundTrip(data []byte) ([]byte, error) {
-	if err := c.send(data); err != nil {
-		return nil, driver.ErrBadConn
+	written, writeErr := c.socket.Write(data)
+	if writeErr == nil && written != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr != nil {
+		c.retireTransport()
+		if written == 0 {
+			return nil, driver.ErrBadConn
+		}
+		return nil, &OperationalError{CubridError{Code: -1,
+			Message: fmt.Sprintf("CAS request write interrupted after %d/%d bytes; execution outcome unknown and unsafe to retry: %v",
+				written, len(data), writeErr)}}
 	}
 	resp, err := c.recv()
 	if err != nil {
-		return nil, driver.ErrBadConn
+		c.retireTransport()
+		return nil, &OperationalError{CubridError{Code: -1,
+			Message: fmt.Sprintf("CAS reply unavailable after request send; execution outcome unknown and unsafe to retry: %v", err)}}
 	}
 	// Update CAS_INFO from the response (first 4 bytes).
 	if len(resp) >= SizeCASInfo {
