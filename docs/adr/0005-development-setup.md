@@ -7,7 +7,7 @@
 
 ## Context
 
-A correct CUBRID design and test-first workflow can still fail when contributors use inconsistent compiler/runtime versions, lockfiles, phantom integration tests or package/module paths that cannot be installed by an external consumer. A developer passing offline tests must not claim real broker/DDL or published package compatibility. The Python projects demonstrated the value of real, fail-closed integration gates, exact dependency environments and reproducible proof.
+A correct CUBRID design and test-first workflow can still fail when contributors use inconsistent compiler/runtime versions, lockfiles, phantom integration tests or package/module paths that cannot be installed by an external consumer. A developer passing offline tests must not claim real broker/DDL or published package compatibility. This repository therefore requires a reproducible, language-native toolchain, independently executable real CUBRID verification, and honest evidence for its go.mod, Go semantic import versioning, database/sql behavior, and real CUBRID tests.
 
 ## Decision
 
@@ -21,14 +21,14 @@ Use `go.mod` Go 1.21 as declared minimum, require a nonmutating baseline `go mod
 
 ## Alternatives considered
 
-- **Rejected:** One shared global language/tool version and cross-language Makefile for every repo; violates Go, Cargo and Node-specific conventions.
+- **Rejected:** An externally copied setup that ignores this repository's actual toolchain, dependency graph, and test commands.
 - **Rejected:** Treat the green CI of an unrelated driver as proof the ORM or new developer machine is ready.
 - **Rejected:** Silently replace dependencies, module imports or runtime support bounds during documentation/setup work.
 - **Rejected:** Install a non-CUBRID fake server to make a missing real integration test appear green.
 
 ## Consequences and trade-offs
 
-The setup guide makes current blockers visible rather than working around them. Some integration commands must remain explicitly blocked until a real CUBRID harness, correct package dependencies and upstream dialect extension are validated. Tool-version upgrades may need independent consumer compatibility reviews.
+The setup guide makes current blockers visible rather than working around them. Some integration commands must remain explicitly blocked until a real CUBRID harness, correct package dependencies and required driver interfaces are validated. Tool-version upgrades may need independent consumer compatibility reviews.
 
 ## Blocking questions before setup approval
 
