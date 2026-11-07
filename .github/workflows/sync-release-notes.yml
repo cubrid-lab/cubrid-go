@@ -1,0 +1,56 @@
+name: Synchronize reviewed historical release notes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/releases/**"
+      - ".github/workflows/sync-release-notes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate notes before publishing
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for file in sorted(Path("docs/releases").glob("v*.md")):
+              body = file.read_text()
+              tag = file.stem
+              assert body.startswith(f"## {tag} ("), f"Wrong heading: {file}"
+              assert body.rstrip().splitlines()[-1].startswith("**Full Changelog:**"), f"Missing comparison: {file}"
+              assert "github.com/cubrid-labs/" not in body, f"Stale GitHub org link: {file}"
+              entries = [line for line in body.splitlines() if line.startswith("- ") and "by @" in line]
+              assert entries and all(re.search(r" by @[A-Za-z0-9-]+(?: \(first contribution 🎉\))?$", line) for line in entries), f"Bad author attribution: {file}"
+              for index, line in enumerate(body.splitlines()[:-1]):
+                  if line.startswith("- "):
+                      assert not body.splitlines()[index + 1].startswith("  "), f"Wrapped list entry: {file}"
+          print("Curated release notes validated.")
+          PY
+      - name: Update only existing GitHub Release descriptions
+        env:
+          GH_${{ github.token }}: TOKEN
+          GH_${{ github.repository }}: REPO
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in docs/releases/v*.md; do
+            tag=$(basename "$file" .md)
+            if ! gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+              echo "::notice::No existing Release for $tag; no new tag or Release created."
+              continue
+            fi
+            gh release edit "$tag" --repo "$GH_REPO" --title "cubrid-go $tag" --notes-file "$file"
+            echo "Updated existing Release $tag"
+          done
