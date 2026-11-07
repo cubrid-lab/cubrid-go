@@ -10,7 +10,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  impact:
+    name: Select CI validation scope
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: scope
+        name: Classify changed paths and test the classifier
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          is_docs_only() {
+            local path seen=0
+            while IFS= read -r -d '' path; do
+              seen=1
+              case "$path" in
+                *.md|*.mdx|*.rst|docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.svg|docs/*.webp) ;;
+                *) return 1 ;;
+              esac
+            done
+            [[ "$seen" -eq 1 ]]
+          }
+          is_docs_only < <(printf 'README.md\0docs/guide.md\0')
+          if is_docs_only < <(printf 'README.md\0src/client.go\0'); then
+            echo "::error::Mixed source/doc changes were misclassified"
+            exit 1
+          fi
+          if is_docs_only < <(printf '.github/workflows/ci.yml\0'); then
+            echo "::error::A CI policy change was misclassified"
+            exit 1
+          fi
+          if is_docs_only < /dev/null; then
+            echo "::error::Missing changed files were misclassified"
+            exit 1
+          fi
+          docs_only=false
+          if [[ "$EVENT_NAME" == pull_request ]] &&
+             git rev-parse --verify HEAD^2 >/dev/null 2>&1 &&
+             git -c core.quotePath=false diff --no-renames --name-only -z HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths.bin"; then
+            if is_docs_only < "$RUNNER_TEMP/changed-paths.bin"; then
+              docs_only=true
+            fi
+          else
+            echo "Non-PR event or diff unavailable: full validation"
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "Validation scope: docs_only=$docs_only" >> "$GITHUB_STEP_SUMMARY"
+
+  docs-check:
+    name: Documentation whitespace
+    needs: impact
+    if: ${{ always() && needs.impact.outputs.docs_only == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - run: git diff --check HEAD^1 HEAD
+
   lint:
+    needs: impact
+    if: ${{ always() && needs.impact.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -28,6 +96,8 @@ jobs:
           fi
 
   test:
+    needs: impact
+    if: ${{ always() && needs.impact.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,7 +117,8 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [impact, lint, test]
+    if: ${{ always() && needs.impact.outputs.docs_only != 'true' && needs.lint.result == 'success' && needs.test.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -76,3 +147,32 @@ jobs:
         env:
           CUBRID_TEST_DSN: "CUBRID:localhost:33000:testdb:::"
         run: go test -v -run Integration ./...
+
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [impact, docs-check, lint, test, integration]
+    runs-on: ubuntu-latest
+    env:
+      IMPACT: ${{ needs.impact.result }}
+      DOCS_ONLY: ${{ needs.impact.outputs.docs_only }}
+      DOCS_RESULT: ${{ needs.docs-check.result }}
+      LINT: ${{ needs.lint.result }}
+      TEST: ${{ needs.test.result }}
+      INTEGRATION: ${{ needs.integration.result }}
+    steps:
+      - name: Require every selected validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMPACT" == success ]] || { echo "::error::Impact classifier failed"; exit 1; }
+          if [[ "$DOCS_ONLY" == true ]]; then
+            [[ "$DOCS_RESULT" == success ]] || { echo "::error::Docs check: $DOCS_RESULT"; exit 1; }
+            for result in "$LINT" "$TEST" "$INTEGRATION"; do
+              [[ "$result" == skipped || "$result" == success ]] || exit 1
+            done
+          else
+            for result in "$LINT" "$TEST" "$INTEGRATION"; do
+              [[ "$result" == success ]] || { echo "::error::Runtime check: $result"; exit 1; }
+            done
+          fi
