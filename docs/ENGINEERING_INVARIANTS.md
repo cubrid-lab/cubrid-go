@@ -1,6 +1,8 @@
-# Engineering invariants learned from the Python CUBRID projects
+# Engineering invariants for cubrid-go
 
-> **Status:** Engineering review checklist and test-design requirements, not evidence that this repository already passes them. Adopted from verified scenarios in [pycubrid](https://github.com/cubrid-lab/pycubrid) and [sqlalchemy-cubrid](https://github.com/cubrid-lab/sqlalchemy-cubrid), with language-native adaptation. Review together with this repository's release policy before claiming stable support.
+> **Status:** Proposed repository-specific engineering checklist, not evidence that existing tests pass.
+
+cubrid-go owns the Go database/sql CAS driver. Correctness requirements follow Go database/sql/driver interfaces, physical CAS sessions, Go module imports, context cancellation, and real CUBRID tests. Use this repository's implementation, public API, relevant live-CUBRID evidence and official CUBRID/JDBC results as appropriate; never assume that another language's driver or ORM test result establishes behavior here.
 
 ## Why these invariants exist
 
@@ -27,7 +29,7 @@ Useful concrete sources:
 - [ ] For any `conn.go`, `stmt.go`, `rows.go`, `tx.go` or `protocol.go` change, record before-send/in-flight/after-reply state and prove error classification.
 - [ ] Go-native unit/fuzz/state tests, `go test -race` on affected concurrent code and real CUBRID tests cover both normal and failure cases.
 - [ ] Explicitly cover CAS restart, autocommit, transaction rollback, stale handle invalidation and request cancellation where relevant.
-- [ ] Compare important outcomes to official JDBC/pycubrid on the same server version without copying their API.
+- [ ] Compare important outcomes to official JDBC on the same server version without copying their API.
 - [ ] Real database assertions must be nonempty, scoped to disposable test databases and accompanied by test counts. The CI's 11.0/11.2 services do not certify every roadmap-supported version.
 - [ ] Verify module import path and external Go consumer before a release; v2+ follows Go semantic import versioning.
 - [ ] No unverified performance claim, unsupported-database label or stale support badge.
