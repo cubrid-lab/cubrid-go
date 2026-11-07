@@ -39,6 +39,22 @@ go vet ./...
 
 ---
 
+
+
+## Reproducible development setup
+
+Before changing code, follow [the repository-specific development setup](docs/DEVELOPMENT_SETUP.md) and [ADR 0005](docs/adr/0005-development-setup.md). Start from the committed language-native manifest and a **clean checkout**, run non-mutating local checks, and record the actual toolchain and results. Do not interpret a mock suite or missing/fully skipped integration tests as real CUBRID verification, and do not alter Go module import path or minimum supported Go version or release tooling to work around an unverified local setup issue. The setup ADR is Proposed and awaits review.
+
+## Test-driven implementation
+
+For bug fixes or behavioral features, start from a reviewed interface/SQL/transaction design. Use the [TDD decision](docs/adr/0004-test-first-development.md): **Red** (run a new focused test and capture the genuine target failure), **Green** (smallest production change passing that test), **Refactor** (rerun related tests and final PR CI). In the PR description record the failing assertion/error **actually observed**, the passing assertion, which regressions ran, and whether real CUBRID validation ran or remains unverified. A mock-only pass cannot establish server compatibility; the exact release candidate still requires full live DB validation. No deliberate failing tests or skipped release checks may be left to satisfy the TDD process. For documentation and upstream feasibility work, describe the design/probe evidence rather than forcing an irrelevant Red test. The ADR and design contracts are proposals until reviewed and accepted.
+
+## CUBRID correctness and regression evidence
+
+For changes to Go `database/sql` connection/session semantics, result types and transaction behavior, read [this repository's engineering invariants](docs/ENGINEERING_INVARIANTS.md) **before** implementation and review. The requirements follow the Go `database/sql` driver API and its own CAS responsibilities, not another package's failure reports or test results. In the pull request, describe the behavioral invariant affected, the normal and failure cases tested, and which checks were offline, real CUBRID or independently compared with JDBC. State the exact CUBRID/runtime/driver versions and test outcomes when claiming database compatibility. **Do not mark tests as passed when they were skipped, missing or never executed.**
+
+For documentation-only or nonbehavioral changes, explain why a database run is unnecessary rather than manufacturing an integration result. The final **release candidate** still follows the repository's full live-CUBRID release gate, separate from ordinary PR path optimization. These expectations supplement, and do not weaken, the established review/CI rules.
+
 ## Running Tests
 
 ### Unit Tests
