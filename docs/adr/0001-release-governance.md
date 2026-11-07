@@ -17,7 +17,7 @@ Applicable SemVer classification: a compatible bug/security fix is generally PAT
 
 ## Alternatives considered
 
-- **Rejected:** Copy Python/Node version rules into Go; mechanically match gorm-cubrid's full version; remove existing module import paths without migration; call the full CI matrix passed when the supported servers were not all tested.
+- **Rejected:** Impose a runtime/version rule unrelated to Go module compatibility; mechanically match another package's full version; remove existing module import paths without migration; call the full CI matrix passed when the supported servers were not all tested.
 - **Rejected:** Making this package's releases contingent on matching another repository's version number or calendar.
 - **Rejected:** Treat an issue, green mock suite, GitHub tag or draft changelog as sufficient release evidence.
 
