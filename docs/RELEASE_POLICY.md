@@ -2,6 +2,10 @@
 
 > **Decision stage:** Draft policy for review, 2026-11-07. This document is a release contract proposal; no version, tag, dependency or publication workflow changes are made by this PR. Architecture/implementation follow only after approval and merge.
 
+## Native correctness review derived from Python
+
+Review [the repository-specific engineering invariants](ENGINEERING_INVARIANTS.md) before accepting behavioral CUBRID changes or declaring database compatibility. The checklist is based on actual pycubrid/sqlalchemy-cubrid failure regressions, translated into this repository's native interfaces. **Written review rules are not executable checks**: the real-CUBRID release gate below remains mandatory, and any missing test coverage is tracked as implementation work rather than claimed complete.
+
 ## Version numbers
 
 Use SemVer for **each publicly distributed package/module/crate**. A compatibility-generation relationship between the CUBRID driver and its ORM adapter does not override an individual package's SemVer contract.
