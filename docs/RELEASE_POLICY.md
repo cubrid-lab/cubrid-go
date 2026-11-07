@@ -2,9 +2,9 @@
 
 > **Decision stage:** Draft policy for review, 2026-11-07. This document is a release contract proposal; no version, tag, dependency or publication workflow changes are made by this PR. Architecture/implementation follow only after approval and merge.
 
-## Native correctness review derived from Python
+## Go database/sql driver correctness and verification
 
-Review [the repository-specific engineering invariants](ENGINEERING_INVARIANTS.md) before accepting behavioral CUBRID changes or declaring database compatibility. The checklist is based on actual pycubrid/sqlalchemy-cubrid failure regressions, translated into this repository's native interfaces. **Written review rules are not executable checks**: the real-CUBRID release gate below remains mandatory, and any missing test coverage is tracked as implementation work rather than claimed complete.
+Review [the repository-specific engineering invariants](ENGINEERING_INVARIANTS.md) before accepting behavioral CUBRID changes or declaring database compatibility. The checklist follows this repository's own API, implementation risks, and verifiable CUBRID behavior. **Written review rules are not executable checks**: the real-CUBRID release gate below remains mandatory, and any missing test coverage is tracked as implementation work rather than claimed complete.
 
 ## Reproducible development setup prerequisite
 
