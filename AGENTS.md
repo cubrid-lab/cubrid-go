@@ -1,8 +1,8 @@
 # AGENTS.md
 
-## Shared issue and pull request policy
+## Issue and pull request guidance (cubrid-go)
 
-See [cubrid-lab issue, PR, and commit standard](https://github.com/cubrid-lab/.github/blob/main/docs/ISSUE_PR_COMMIT_STANDARD.md). Issues use a simple type-only title (`feat: ...`, `bug: ...`, `docs: ...`) without required module names. Describe the problem or goal, relevant evidence, and a verifiable outcome; keep implementation details provisional. Triage owns validity, duplicates, scope, priority and size. Pull requests and commits use the existing Conventional Commits/CI requirements and document actual changes and checks. Do not include internal agent instructions or personal comments in public issue prose.
+See [the local contributor guide](CONTRIBUTING.md). Issues use a simple type-only title (`feat: ...`, `bug: ...`, `docs: ...`) without required module names. Describe the problem or goal, relevant evidence, and a verifiable outcome; keep implementation details provisional. Triage owns validity, duplicates, scope, priority and size. Pull requests and commits use the existing Conventional Commits/CI requirements and document actual changes and checks. Do not include internal agent instructions or personal comments in public issue prose.
 
 
 ## Purpose
@@ -97,14 +97,14 @@ documentation, presentations, and other maintainer-facing writing.
   separate lookup table. Edit an existing editable comment to correct unclear
   wording rather than adding redundant follow-up comments.
 
-This is a shared writing convention, not a new CI check, reviewer approval,
+These are local writing expectations, not a new CI check, reviewer approval,
 or merge gate. Keep existing repository-specific technical and safety rules.
 
 ### Explanations in code, tests and reviews
 
 Source comments, test names and test comments, examples, PR descriptions and
 review replies follow
-[section 6 of the cubrid-lab issue, PR, and commit standard](https://github.com/cubrid-lab/.github/blob/main/docs/ISSUE_PR_COMMIT_STANDARD.md#6-explanations-in-code-tests-reviews-and-agent-written-text):
+the local explanation rule below:
 say what happens, why it matters and the constraint involved, in plain
 English, before any issue number or scenario code. Identifiers are fine for
 traceability once explained; keep machine-readable names (test names used for
@@ -116,8 +116,7 @@ handle ownership should state the behavior and the invariant it protects (for
 example, that a handle from an earlier session must never be sent) before
 citing an issue.
 
-This repository's own safety, build, test and release rules take precedence
-where they differ from the shared standard.
+The safety, build, test and release rules in this repository are authoritative.
 
 ## Repository ownership in issues, PRs, and design documents
 
