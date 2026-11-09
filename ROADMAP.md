@@ -2,14 +2,11 @@
 
 > **Last updated**: 2026-03-20
 >
-> This roadmap reflects current priorities. For the ecosystem-wide view, see the
-> [CUBRID Labs Ecosystem Roadmap](https://github.com/cubrid-labs/.github/blob/main/ROADMAP.md).
+> This roadmap reflects current priorities.
 
 ## Links
 
-- 📋 [GitHub Milestones](https://github.com/cubrid-labs/cubrid-go/milestones)
-- 🗂️ [Org Project Board](https://github.com/orgs/cubrid-labs/projects/2)
-- 🌐 [Ecosystem Roadmap](https://github.com/cubrid-labs/.github/blob/main/ROADMAP.md)
+- 📋 [GitHub Milestones](https://github.com/cubrid-lab/cubrid-go/milestones)
 
 ## Next Release — v1.0.0 — Stable Release
 
