@@ -1,0 +1,27 @@
+name: Release note quality (read-only)
+
+on:
+  pull_request:
+    paths:
+      - "docs/releases/**"
+      - "docs/RELEASE_NOTES_QUALITY.md"
+      - "scripts/release_notes_quality.py"
+      - "scripts/test_release_notes_quality.py"
+      - ".github/workflows/release-notes-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run offline regression fixtures
+        run: python3 -m unittest discover -s scripts -p test_release_notes_quality.py -v
+      - name: Validate versioned release descriptions
+        run: python3 scripts/release_notes_quality.py
