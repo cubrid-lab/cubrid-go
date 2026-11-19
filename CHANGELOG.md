@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request's reply, or have a reconnect replace the socket under a running
   request. Applications that go through `database/sql` were not affected,
   because `database/sql` already serializes every call on one connection.
+- **A failed `Open` left the CAS socket open (#20):** When the broker
+  accepted the connection but the OpenDatabase step failed (for example, a
+  wrong password or an unknown database name), `Driver.Open` returned the
+  error without closing the socket. No connection was returned, so nothing
+  could close it later and the CAS kept the session until its own timeout.
+  `Open` now closes the socket on every handshake failure.
 - **A canceled request could wait for the `CHECK_CAS` deadline, or crash the
   process (#39):** When a context was canceled just before the
   out-of-transaction `CHECK_CAS` check set its own socket deadline, that
