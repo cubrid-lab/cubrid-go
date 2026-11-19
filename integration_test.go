@@ -151,3 +151,91 @@ func TestDatabaseSQLIntegration(t *testing.T) {
 
 	fmt.Println("All database/sql integration tests PASSED!")
 }
+
+// TestTxStmtCloseWithOpenRowsIntegration is the live check for #86. A
+// statement prepared on a Tx is closed while its rows are open and still
+// have rows to FETCH, and another statement is then prepared on the same
+// session. CUBRID gives a released handle number to the next PREPARE, so if
+// the driver released the handle at once, the open rows would go on to
+// return the second statement's rows. They must return their own.
+func TestTxStmtCloseWithOpenRowsIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	db, err := sql.Open("cubrid", "cubrid://dba:@localhost:33000/testdb?autocommit=true")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	// Enough rows that the EXECUTE reply cannot carry them all, so Next
+	// has to FETCH after the statement is closed.
+	const total = 2000
+	for _, q := range []string{
+		"DROP TABLE IF EXISTS go_test_86a",
+		"DROP TABLE IF EXISTS go_test_86b",
+		"CREATE TABLE go_test_86a (v INT)",
+		"CREATE TABLE go_test_86b (v INT)",
+		fmt.Sprintf("INSERT INTO go_test_86a SELECT ROWNUM FROM db_class x, db_class y, db_class z LIMIT %d", total),
+		fmt.Sprintf("INSERT INTO go_test_86b SELECT 1000000 + ROWNUM FROM db_class x, db_class y, db_class z LIMIT %d", total),
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	defer db.Exec("DROP TABLE IF EXISTS go_test_86a")
+	defer db.Exec("DROP TABLE IF EXISTS go_test_86b")
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tx.Rollback()
+	st, err := tx.Prepare("SELECT v FROM go_test_86a ORDER BY v")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	rows, err := st.Query()
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("first Next: %v", rows.Err())
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("stmt Close: %v", err)
+	}
+
+	other, err := tx.Prepare("SELECT v FROM go_test_86b ORDER BY v")
+	if err != nil {
+		t.Fatalf("second Prepare: %v", err)
+	}
+	defer other.Close()
+	var first int
+	if err := other.QueryRow().Scan(&first); err != nil {
+		t.Fatalf("second statement: %v", err)
+	}
+
+	want := 1
+	for {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if v != want {
+			t.Fatalf("row %d of the closed statement is %d; it returned another statement's rows", want, v)
+		}
+		want++
+		if !rows.Next() {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows of the closed statement: %v", err)
+	}
+	if want-1 != total {
+		t.Fatalf("read %d rows, want %d", want-1, total)
+	}
+}

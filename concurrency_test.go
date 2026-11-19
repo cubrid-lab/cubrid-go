@@ -65,11 +65,11 @@ func holdReply(f *fakeCAS, fc byte) (started <-chan struct{}, competing chan<- s
 // both use one physical connection. database/sql serializes the two: it calls
 // Rows.Next and the driver statement's Close with the same per-connection
 // lock held, so the CAS never receives the CLOSE_REQ (or its CHECK_CAS probe)
-// while the FETCH reply is still outstanding. Serializing them does not make
-// the close safe for the rows: the rows share the statement's server handle,
-// and a later FETCH would use the released handle (see #86 and
-// TestTxStmtCloseReleasesHandleOfOpenRows). Here the result set has two rows,
-// so the FETCH in flight is the last one.
+// while the FETCH reply is still outstanding. Serializing them does not by
+// itself make the close safe for the rows, which share the statement's server
+// handle; the driver defers the CLOSE_REQ while rows may still fetch (see #86
+// and TestTxStmtCloseReleasesHandleOfOpenRows). Here the result set has two
+// rows, so the FETCH in flight is the last one and the close is not deferred.
 func TestTxStmtCloseDoesNotInterleaveWithRowsFetch(t *testing.T) {
 	f := newFakeCAS(t)
 	f.rowsTotal = 2
@@ -351,19 +351,15 @@ func TestConcurrentDBUseAcrossBrokerRestarts(t *testing.T) {
 	}
 }
 
-// TestTxStmtCloseReleasesHandleOfOpenRows describes the behavior wanted for
-// #86. database/sql closes a statement prepared on a Tx or a *sql.Conn at
-// once, even while rows from it are still open, and those rows fetch with the
-// statement's server handle. Today the driver sends CLOSE_REQ for the handle
-// and the next Next calls FETCH it anyway, so the CAS receives PREPARE,
-// EXECUTE, CLOSE_REQ, FETCH, FETCH. On a real server the cursor is gone
-// after the CLOSE_REQ. The test asserts only what any fix must guarantee: the
-// CAS never receives a FETCH for a handle after its CLOSE_REQ. It is skipped
-// rather than written to assert today's behavior, so that it cannot pin the
-// defect as expected and stays ready to enable with the fix.
+// TestTxStmtCloseReleasesHandleOfOpenRows covers #86. database/sql closes a
+// statement prepared on a Tx or a *sql.Conn at once, even while rows from it
+// are still open, and those rows fetch with the statement's server handle.
+// Releasing the handle then would let the next PREPARE on the session reuse
+// its number (CUBRID 11.0 and 11.2 do), and the rows would fetch that
+// statement's result. The driver defers the CLOSE_REQ until the rows no longer need the
+// handle, so the rows keep working, as rows of a *sql.DB statement do, and
+// the CAS never receives a FETCH for a handle after its CLOSE_REQ.
 func TestTxStmtCloseReleasesHandleOfOpenRows(t *testing.T) {
-	t.Skip("known defect, tracked by https://github.com/cubrid-lab/cubrid-go/issues/86")
-
 	f := newFakeCAS(t)
 	f.rowsTotal = 3
 	f.answerFetch = true
@@ -393,19 +389,21 @@ func TestTxStmtCloseReleasesHandleOfOpenRows(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatalf("stmt Close: %v", err)
 	}
+	n := 1
 	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows of the closed statement: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("read %d rows after closing the statement, want 3", n)
 	}
 	_ = rows.Close()
 
-	closed := false
-	for _, e := range f.entries() {
-		switch e {
-		case "s1 CLOSE_REQ SELECT v FROM t":
-			closed = true
-		case "s1 FETCH SELECT v FROM t":
-			if closed {
-				t.Fatalf("FETCH sent after the handle's CLOSE_REQ; requests: %q", f.entries())
-			}
-		}
+	want := []string{"s1 PREPARE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t",
+		"s1 FETCH SELECT v FROM t", "s1 FETCH SELECT v FROM t", "s1 CLOSE_REQ SELECT v FROM t"}
+	if got := sessionLog(f.entries(), "s1"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("CAS received %q, want %q", got, want)
 	}
 }

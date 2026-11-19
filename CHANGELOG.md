@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `database/sql` panics on the second registration.
 
 ### Fixed
+- **Rows of a closed `Tx` or `sql.Conn` statement could return another
+  statement's rows (#86):** `database/sql` closes a statement prepared on a
+  `Tx` or `*sql.Conn` at once, even while `Rows` from it are open, and the
+  driver released the server handle straight away. Further `Rows.Next` calls
+  fetched on the released handle. CUBRID gives a released handle number to
+  the next `PREPARE` on the session, so on CUBRID 11.0 and 11.2 the rows
+  went on to return the other statement's rows with no error; without such
+  a `PREPARE`, `Next` failed with a CAS error (-1006). The driver now defers the release
+  until the last open rows of the statement are closed or have read their
+  last row, so those rows keep working, as rows of a `*sql.DB` statement do.
+  If the connection reconnects in the meantime, the deferred release sends
+  nothing on the new session.
 - **Fetching and closing rows now hold the connection lock (#20):**
   `Rows.Next` (when it fetches the next block of rows) and `Rows.Close` (when
   the rows own their server handle) sent their request, and could reconnect,

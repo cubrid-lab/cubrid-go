@@ -10,7 +10,8 @@ import (
 //
 // closeHandle controls whether Close() sends FC=6 (CloseReqHandle).
 // When rows are returned by stmt.Query(), closeHandle is false because
-// the handle belongs to the stmt and will be closed by stmt.Close().
+// the handle belongs to the stmt and will be closed by stmt.Close(), or by
+// these rows if the stmt was closed while they could still fetch (see stmt).
 // When rows are the sole owner of a handle (e.g. from a one-shot execSQL),
 // closeHandle should be true.
 type rows struct {
@@ -29,6 +30,10 @@ type rows struct {
 	// generation is the physical-session generation of queryHandle; the
 	// server cursor exists only on that session.
 	generation uint64
+	// stmt is the prepared statement whose handle these rows fetch with,
+	// while they may still FETCH. It is counted in stmt.openRows and cleared
+	// by detachStmt.
+	stmt *stmt
 }
 
 // Columns returns the column names.
@@ -44,11 +49,17 @@ func (r *rows) Columns() []string {
 // FC=6 (CloseReqHandle) is only sent when closeHandle is true — that is,
 // when this rows value is the sole owner of the server-side handle.
 // Normally the handle is owned by the parent stmt and closed by stmt.Close().
+//
+// If the rows were the last ones fetching with a stmt that has been closed
+// meanwhile, Close sends that stmt's deferred CLOSE_REQ.
 func (r *rows) Close() error {
 	if r.closed {
 		return nil
 	}
 	r.closed = true
+	if r.stmt != nil {
+		r.detachStmt()
+	}
 	if r.closeHandle && r.queryHandle > 0 {
 		// CLOSE_REQ may reconnect; hold the conn mutex like every other
 		// request path, so the request and its reply are not split by another
@@ -60,6 +71,21 @@ func (r *rows) Close() error {
 		r.queryHandle = 0
 	}
 	return nil
+}
+
+// detachStmt stops counting these rows as a user of their stmt's handle,
+// once they are closed or will not FETCH again. If the stmt was closed and
+// these were its last such rows, it releases the stmt's handle; a handle
+// from an earlier physical session is dropped without sending anything.
+func (r *rows) detachStmt() {
+	r.conn.mu.Lock()
+	defer r.conn.mu.Unlock()
+	s := r.stmt
+	r.stmt = nil
+	s.openRows--
+	if s.closed && s.openRows == 0 {
+		s.releaseHandleLocked()
+	}
 }
 
 // Next advances to the next row, fetching more from the server when needed.
@@ -95,7 +121,7 @@ func (r *rows) Next(dest []driver.Value) error {
 	}
 
 	if res.TupleCount == 0 {
-		r.exhausted = true
+		r.markExhausted()
 		return io.EOF
 	}
 
@@ -104,10 +130,19 @@ func (r *rows) Next(dest []driver.Value) error {
 	r.fetchedCount += res.TupleCount
 
 	if r.fetchedCount >= r.totalCount {
-		r.exhausted = true
+		r.markExhausted()
 	}
 
 	return r.fillDest(dest, r.bufferedRows[r.bufferOffset])
+}
+
+// markExhausted records that every row has been fetched. The rows will not
+// FETCH again, so they no longer need their stmt's handle.
+func (r *rows) markExhausted() {
+	r.exhausted = true
+	if r.stmt != nil {
+		r.detachStmt()
+	}
 }
 
 // fetch sends FETCH for the next block of rows and returns the reply. It
