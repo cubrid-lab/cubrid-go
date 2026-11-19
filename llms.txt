@@ -22,8 +22,6 @@ Key facts:
 
 - [database/sql Usage](https://github.com/cubrid-lab/cubrid-go/blob/main/README.md#usage-with-databasesql): Basic SQL driver usage with parameterized queries
 - [GORM Usage](https://github.com/cubrid-lab/cubrid-go/blob/main/README.md#usage-with-gorm): Full GORM ORM example with AutoMigrate, CRUD operations
-- [CUBRID Cookbook — cubrid-go](https://github.com/cubrid-labs/cubrid-cookbook/tree/main/go/cubrid-go): Production-ready Go examples — connect, CRUD, transactions
-- [CUBRID Cookbook — GORM](https://github.com/cubrid-labs/cubrid-cookbook/tree/main/go/gorm): GORM examples — connect, CRUD, relationships, advanced queries
 
 ## API Reference
 

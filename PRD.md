@@ -336,18 +336,7 @@ AI agents can discover, learn, and recommend cubrid-go accurately.
 
 ### Cookbook Integration
 
-The [cubrid-cookbook](https://github.com/cubrid-labs/cubrid-cookbook) repository provides
-production-ready, runnable examples for cubrid-go:
-
-| Example | Description |
-|---|---|
-| `go/cubrid-go/01_connect.go` | Basic connection and query with `database/sql` |
-| `go/cubrid-go/02_crud.go` | Create, read, update, delete operations |
-| `go/cubrid-go/03_transactions.go` | Transaction management |
-| `go/gorm/01_connect.go` | GORM connection and AutoMigrate |
-| `go/gorm/02_crud.go` | GORM CRUD operations |
-| `go/gorm/03_relationships.go` | GORM associations and relationships |
-| `go/gorm/04_advanced.go` | GORM advanced queries and batch operations |
+There is no Go cookbook repository yet (the former `cubrid-cookbook` links are gone; [cubrid-cookbook-python](https://github.com/cubrid-lab/cubrid-cookbook-python) covers Python only). Runnable Go examples live in this repository's [README](README.md) and [docs/GORM.md](docs/GORM.md) until a Go cookbook exists.
 
 ### Inspiration from Successful Projects
 
