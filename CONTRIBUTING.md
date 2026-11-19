@@ -1,6 +1,6 @@
 # Contributing to cubrid-go
 
-**Issue titles:** use a type-only prefix such as `feat:` or `bug:`, without a module scope. **PR and commit titles:** use the Conventional Commits format `type: description` or `type(scope): description` (checked by `pr-title.yml`); the squash-merged PR title becomes the `CHANGELOG.md` entry, so do not edit `CHANGELOG.md` in a PR. See [the release process](docs/RELEASE_PROCESS.md). See [AGENTS.md](AGENTS.md) for evidence, acceptance criteria and triage responsibilities.
+**Issue titles:** use a type-only prefix such as `feat:` or `bug:`, without a module scope. **PR and commit titles:** use the Conventional Commits format `type: description` or `type(scope): description` (checked by `pr-title.yml`); the squash-merged PR title becomes the `CHANGELOG.md` entry, so do not edit `CHANGELOG.md` in a PR. A PR created with GitHub's **Revert** button must be retitled from `Revert "..."` to `revert: ...`. See [the release process](docs/RELEASE_PROCESS.md). See [AGENTS.md](AGENTS.md) for evidence, acceptance criteria and triage responsibilities.
 
 Thank you for your interest in contributing! This document provides guidelines
 and instructions for contributing to the project.
