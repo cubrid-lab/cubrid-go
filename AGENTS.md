@@ -2,7 +2,7 @@
 
 ## Issue and pull request guidance (cubrid-go)
 
-See [the local contributor guide](CONTRIBUTING.md). Issues use a simple type-only title (`feat: ...`, `bug: ...`, `docs: ...`) without required module names. Describe the problem or goal, relevant evidence, and a verifiable outcome; keep implementation details provisional. Triage owns validity, duplicates, scope, priority and size. Pull requests and commits use the existing Conventional Commits/CI requirements and document actual changes and checks. Do not include internal agent instructions or personal comments in public issue prose.
+See [the local contributor guide](CONTRIBUTING.md). Issues use a simple type-only title (`feat: ...`, `bug: ...`, `docs: ...`) without required module names. Describe the problem or goal, relevant evidence, and a verifiable outcome; keep implementation details provisional. Triage owns validity, duplicates, scope, priority and size. Pull requests and commits use the existing Conventional Commits/CI requirements and document actual changes and checks. The squash-merged PR title drives the Release Please version bump and `CHANGELOG.md`, so do not edit `CHANGELOG.md` in a PR; see [the release process](docs/RELEASE_PROCESS.md). Do not include internal agent instructions or personal comments in public issue prose.
 
 
 ## Purpose
