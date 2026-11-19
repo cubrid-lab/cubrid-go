@@ -223,9 +223,9 @@ Measure under production-like load and adjust from there. If requests begin queu
 ### CUBRID-specific notes
 
 - The pool limit should stay below the available CUBRID broker worker capacity. Setting `MaxOpenConns` higher than the broker can actually serve only shifts contention downstream.
-- `PingContext()` is a good readiness or startup check because it fails fast when the broker is unavailable or the DSN is invalid.
+- `PingContext()` is a useful startup check while the pool is empty: it opens a connection, whose handshake fails fast when the broker is unavailable or the DSN is invalid. On an existing pooled connection it currently sends nothing to the server, because the driver does not implement `driver.Pinger` yet ([#88](https://github.com/cubrid-lab/cubrid-go/issues/88)).
 - If your deployment has multiple application instances, size the pool per instance, not just per service. For example, `25` open connections across `4` replicas can become `100` broker sessions.
-- Each pooled connection is one CAS session and runs one request at a time; goroutines run in parallel on different connections. `*sql.DB` is safe for concurrent use, and an automatic reconnect affects only the connection whose request triggered it. See [Concurrency](docs/CONCURRENCY.md) for the full contract.
+- Each pooled connection is one CAS session and runs one request at a time; goroutines run in parallel on different connections. `*sql.DB` is safe for concurrent use, and an automatic reconnect affects only the connection whose request triggered it. Close or drain `Rows` before closing a statement prepared on a `Tx` or `sql.Conn` ([#86](https://github.com/cubrid-lab/cubrid-go/issues/86)), and note that only `QueryContext`/`ExecContext` honor context cancellation today ([#87](https://github.com/cubrid-lab/cubrid-go/issues/87)). See [Concurrency](docs/CONCURRENCY.md) for the full contract.
 
 ## Supported Features
 
@@ -241,7 +241,7 @@ Measure under production-like load and adjust from there. If requests begin queu
 | Result streaming (FETCH) | ✅ | Memory-efficient |
 | Last insert ID | ✅ | Via `SELECT LAST_INSERT_ID()` |
 | Connection pool | ✅ | Go standard `database/sql` |
-| Connection health check (Ping) | ✅ | Via `GET_DB_VERSION` |
+| Connection health check (Ping) | ⚠️ | `db.Ping` checks the server only when it opens a new connection; `driver.Pinger` is not implemented yet ([#88](https://github.com/cubrid-lab/cubrid-go/issues/88)) |
 | LOB (BLOB/CLOB) | ⚠️ | Raw bytes only |
 | Timezone-aware types | ⚠️ | UTC only |
 | ON CONFLICT / UPSERT | ❌ | Use raw SQL workaround |

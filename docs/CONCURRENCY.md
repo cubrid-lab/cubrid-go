@@ -42,8 +42,9 @@ check it.
 
 ## How `database/sql` calls the driver
 
-Verified against the `database/sql` source of Go 1.23.4; CI runs the tests
-below on Go 1.21 and 1.22 as well.
+Verified against the `database/sql` source of Go 1.21.0, 1.22.0 and 1.23.4,
+where the relevant functions are identical. CI runs the tests below on Go 1.21
+and 1.22.
 
 `database/sql` keeps one mutex per physical connection (its `driverConn`) and
 holds it for every call into the driver for that connection:
@@ -88,7 +89,7 @@ the reply. Every path that can send a request or reconnect holds it:
 | `socket` | `connect` (handshake and reconnect), `checkReconnect` | `conn.mu` and `sockMu`, through `setSocket`; or before `Driver.Open` returns the connection. The cancel watcher reads it under `sockMu` only. |
 | `generation` (physical session number) | `connect` | `conn.mu` |
 | `casInfo` (CAS status, including in/out of transaction) | `connect`, every reply, `CHECK_CAS` | `conn.mu` |
-| `closed` | `Close`, `retireTransport`, an interrupted probe | `conn.mu` |
+| `closed` | `Close`, `retireTransport`, an interrupted probe | `conn.mu`, or before `Driver.Open` returns the connection (`retireTransport` on a failed handshake) |
 | `autoCommit` | `Begin`, `BeginTx`, `Commit`, `Rollback` | `conn.mu` |
 | `protoVer`, `stringEscapeMode` | `connect`, first parameterized execution | `conn.mu` |
 | `reqCtx`, `reqDeadline` (running request) | start and end of `QueryContext`, `ExecContext`, `BeginTx` | `conn.mu` |
@@ -130,10 +131,19 @@ expect:
   option bounds only a reconnect handshake and the `CHECK_CAS` probe before
   them. A CAS that stops answering mid-request can block them, holding their
   connection, and canceling the context passed to `database/sql` does not
-  interrupt them.
+  interrupt them. Tracked by
+  [#87](https://github.com/cubrid-lab/cubrid-go/issues/87).
 - `conn.Ping` does not take a context, so the driver does not implement
-  `driver.Pinger`; `db.PingContext` checks the server only when it has to
-  open a new connection.
+  `driver.Pinger`. `db.Ping` and `db.PingContext` therefore send nothing on
+  an existing pooled connection; they reach the server only when they have to
+  open a new connection, whose handshake fails if the broker is down. Tracked
+  by [#88](https://github.com/cubrid-lab/cubrid-go/issues/88).
+- Closing a statement prepared on a `Tx` or a `*sql.Conn` while its `Rows`
+  are open releases the server handle; further `Next` calls fetch on a
+  released handle. `database/sql` serializes the close with the fetches but
+  does not defer it, as it does for a statement prepared on a `*sql.DB`.
+  Close or drain the rows first. See
+  [#86](https://github.com/cubrid-lab/cubrid-go/issues/86).
 
 ## Tests
 
@@ -142,7 +152,8 @@ Run with `go test -race`:
 - `TestTxStmtCloseDoesNotInterleaveWithRowsFetch`: a statement prepared on a
   `Tx` is closed from another goroutine while `Rows.Next` waits for a FETCH
   reply on the same connection; the CAS must receive nothing until that reply
-  has been read.
+  has been read. `TestTxStmtCloseReleasesHandleOfOpenRows` states the wanted
+  behavior for #86 and is skipped until that is fixed.
 - `TestRowsClosedByCancelWhileNextReconnects`: `database/sql` closes rows on
   context cancellation while `Next` reconnects; no later session receives the
   old handle.

@@ -118,7 +118,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, and how an automatic reconnect interacts with requests in flight.
   Race-detector tests through `database/sql` cover a statement closed during a
   fetch, rows closed on cancellation during a reconnect, and concurrent use of
-  one pool across broker restarts.
+  one pool across broker restarts. The README and API reference no longer
+  claim that `db.Ping` sends `GET_DB_VERSION` on a pooled connection: the
+  driver does not implement `driver.Pinger` yet (#88).
 - `InterpolateArgsWithMode` / `FormatValueWithMode` and the `StringEscapeMode`
   type for explicit, connection-aware string escaping. `InterpolateArgs` and
   `FormatValue` remain as literal-backslash (CUBRID-default) wrappers for

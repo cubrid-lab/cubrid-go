@@ -18,7 +18,9 @@ import (
 const defaultFetchSize = 100
 
 // conn is a single TCP connection to the CUBRID CAS broker.
-// It implements driver.Conn, driver.Pinger, and driver.ConnBeginTx.
+// It implements driver.Conn, driver.ConnBeginTx, driver.QueryerContext and
+// driver.ExecerContext. Its Ping method takes no context, so it does not
+// implement driver.Pinger (tracked by #88).
 type conn struct {
 	mu         sync.Mutex
 	socket     net.Conn
@@ -239,7 +241,8 @@ func (c *conn) sendAndRecvHandle(gen uint64, data []byte) ([]byte, error) {
 }
 
 // retireTransport marks an interrupted physical CAS session unusable. The
-// caller holds c.mu in all production request paths. A new database/sql
+// caller holds c.mu in all production request paths, or calls it before the
+// conn is published (Driver.Open). A new database/sql
 // connection may be opened for a later operation, but this session must never
 // be used to replay an ambiguous request.
 func (c *conn) retireTransport() {

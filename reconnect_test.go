@@ -770,7 +770,10 @@ func TestOpenClosesSocketWhenOpenDatabaseFails(t *testing.T) {
 
 		_ = nc.SetReadDeadline(time.Now().Add(time.Second))
 		_, err = nc.Read(make([]byte, 1))
-		closedByClient <- errors.Is(err, io.EOF)
+		// EOF or a connection reset both mean the client closed the socket;
+		// only a timeout means it is still open.
+		var ne net.Error
+		closedByClient <- err != nil && !(errors.As(err, &ne) && ne.Timeout())
 	}()
 
 	dsn := "cubrid://dba:wrong@127.0.0.1:" + strconv.Itoa(l.Addr().(*net.TCPAddr).Port) + "/testdb?timeout=2s"
