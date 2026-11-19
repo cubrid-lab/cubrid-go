@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last row, so those rows keep working, as rows of a `*sql.DB` statement do.
   If the connection reconnects in the meantime, the deferred release sends
   nothing on the new session.
+- **Executing a statement again could redirect its open rows (#86):**
+  `Stmt.Query` or `Stmt.Exec` without arguments executed the prepared
+  handle again even while rows from an earlier execution were open, which
+  makes the CAS replace those rows' cursor; on CUBRID 11.2 the earlier rows
+  then returned the new result from their own offset, with no error. While
+  rows from a statement can still fetch, a new execution without arguments
+  now uses `PREPARE_AND_EXECUTE` and gets its own handle, as executions with
+  arguments already did.
 - **Fetching and closing rows now hold the connection lock (#20):**
   `Rows.Next` (when it fetches the next block of rows) and `Rows.Close` (when
   the rows own their server handle) sent their request, and could reconnect,

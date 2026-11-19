@@ -117,6 +117,9 @@ func TestStmtCloseAfterRowsDrainedToEOF(t *testing.T) {
 		t.Fatalf("rows Close: %v", err)
 	}
 	assertSessionLog(t, f, "s1", want...)
+	if s := ds.(*stmt); s.openRows != 0 || s.queryHandle != 0 {
+		t.Fatalf("stmt keeps handle %d with %d open rows", s.queryHandle, s.openRows)
+	}
 }
 
 // TestDeferredStmtCloseDropsStaleHandle covers a deferred CLOSE_REQ whose
@@ -190,11 +193,13 @@ func TestDeferredStmtCloseDropsStaleHandle(t *testing.T) {
 	}
 }
 
-// TestStmtCloseWaitsForAllOpenRows opens two result sets from one statement
-// prepared on a Tx and closes the statement: the CLOSE_REQ waits for the
-// last of them, the other keeps fetching meanwhile, and no FETCH follows the
-// CLOSE_REQ.
-func TestStmtCloseWaitsForAllOpenRows(t *testing.T) {
+// TestStmtCloseWithTwoOpenResultSets opens two result sets from one
+// statement prepared on a Tx. The second execution gets its own handle
+// (PREPARE_AND_EXECUTE) because the first rows still fetch with the
+// prepared one. Closing the statement, then the first rows, releases the
+// prepared handle; the second rows keep fetching with their own handle,
+// never the released one, and release it when they close.
+func TestStmtCloseWithTwoOpenResultSets(t *testing.T) {
 	f := newFakeCAS(t)
 	f.rowsTotal = 3
 	f.answerFetch = true
@@ -210,13 +215,10 @@ func TestStmtCloseWaitsForAllOpenRows(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatalf("stmt Close: %v", err)
 	}
+	assertSessionLog(t, f, "s1", "s1 PREPARE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t",
+		"s1 PREPARE_AND_EXECUTE SELECT v FROM t")
 	if err := rows1.Close(); err != nil {
 		t.Fatalf("first rows Close: %v", err)
-	}
-	for _, e := range f.entries() {
-		if strings.Contains(e, "CLOSE_REQ") {
-			t.Fatalf("CLOSE_REQ sent while the second rows are open: %q", f.entries())
-		}
 	}
 	n := 1
 	for rows2.Next() {
@@ -231,7 +233,134 @@ func TestStmtCloseWaitsForAllOpenRows(t *testing.T) {
 	_ = rows2.Close()
 
 	assertSessionLog(t, f, "s1", "s1 PREPARE SELECT v FROM t",
-		"s1 EXECUTE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t",
+		"s1 EXECUTE SELECT v FROM t", "s1 PREPARE_AND_EXECUTE SELECT v FROM t",
+		"s1 CLOSE_REQ SELECT v FROM t",
 		"s1 FETCH SELECT v FROM t", "s1 FETCH SELECT v FROM t",
 		"s1 CLOSE_REQ SELECT v FROM t")
+}
+
+// TestStmtReexecuteWithOpenRowsUsesOwnHandle covers executing a statement
+// again while rows from it can still fetch. EXECUTE on the prepared handle
+// would replace the server cursor those rows fetch from: on CUBRID 11.2
+// they went on to read the new result from their own offset, with no error.
+// While such rows are open, Query and Exec use PREPARE_AND_EXECUTE instead,
+// so each result set has its own handle; once the rows are done, the
+// prepared handle is executed again.
+func TestStmtReexecuteWithOpenRowsUsesOwnHandle(t *testing.T) {
+	f := newFakeCAS(t)
+	f.rowsTotal = 3
+	f.answerFetch = true
+	st, rows1 := openTxStmtRows(t, f)
+
+	rows2, err := st.Query()
+	if err != nil {
+		t.Fatalf("second Query: %v", err)
+	}
+	if _, err := st.Exec(); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for _, rs := range []*sql.Rows{rows1, rows2} {
+		for rs.Next() {
+		}
+		if err := rs.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+	}
+	rows3, err := st.Query()
+	if err != nil {
+		t.Fatalf("third Query: %v", err)
+	}
+	_ = rows3.Close()
+	if err := st.Close(); err != nil {
+		t.Fatalf("stmt Close: %v", err)
+	}
+
+	assertSessionLog(t, f, "s1", "s1 PREPARE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t",
+		"s1 PREPARE_AND_EXECUTE SELECT v FROM t",               // rows2
+		"s1 PREPARE_AND_EXECUTE SELECT v FROM t",               // Exec
+		"s1 CLOSE_REQ SELECT v FROM t",                         // Exec's handle
+		"s1 FETCH SELECT v FROM t", "s1 FETCH SELECT v FROM t", // rows1
+		"s1 FETCH SELECT v FROM t", "s1 FETCH SELECT v FROM t", // rows2
+		"s1 CLOSE_REQ SELECT v FROM t", // rows2's handle
+		"s1 EXECUTE SELECT v FROM t",   // rows3, prepared handle
+		"s1 CLOSE_REQ SELECT v FROM t") // the statement
+}
+
+// TestRowsCloseKeepsOpenStmtHandle: rows closed before their last row stop
+// counting against the statement but must not release its handle while the
+// statement is still open; the statement's next execution uses it again.
+func TestRowsCloseKeepsOpenStmtHandle(t *testing.T) {
+	f := newFakeCAS(t)
+	f.rowsTotal = 3
+	f.answerFetch = true
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+	defer func() { _ = c.Close() }()
+
+	ds, err := c.Prepare("SELECT v FROM t")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	s := ds.(*stmt)
+	for i := 0; i < 2; i++ {
+		r, err := s.Query(nil)
+		if err != nil {
+			t.Fatalf("Query %d: %v", i+1, err)
+		}
+		if s.openRows != 1 {
+			t.Fatalf("openRows = %d with one result set open, want 1", s.openRows)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("rows Close: %v", err)
+		}
+		if s.openRows != 0 {
+			t.Fatalf("openRows = %d after rows Close, want 0", s.openRows)
+		}
+	}
+	assertSessionLog(t, f, "s1", "s1 PREPARE SELECT v FROM t",
+		"s1 EXECUTE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t")
+	if s.queryHandle == 0 {
+		t.Fatalf("the open statement lost its handle")
+	}
+}
+
+// TestStmtCloseWithSingleReplyRows: rows that arrived whole with the EXECUTE
+// reply never fetch, so they do not hold the statement's handle; closing the
+// statement releases it at once, and the rows still return their row.
+func TestStmtCloseWithSingleReplyRows(t *testing.T) {
+	f := newFakeCAS(t) // rowsTotal 1: the EXECUTE reply carries every row
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+	defer func() { _ = c.Close() }()
+
+	ds, err := c.Prepare("SELECT v FROM t")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	r, err := ds.(*stmt).Query(nil)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if n := ds.(*stmt).openRows; n != 0 {
+		t.Fatalf("openRows = %d for rows that cannot fetch, want 0", n)
+	}
+	if err := ds.Close(); err != nil {
+		t.Fatalf("stmt Close: %v", err)
+	}
+	assertSessionLog(t, f, "s1", "s1 PREPARE SELECT v FROM t", "s1 EXECUTE SELECT v FROM t",
+		"s1 CLOSE_REQ SELECT v FROM t")
+	dest := make([]driver.Value, 1)
+	if err := r.Next(dest); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if err := r.Next(dest); err != io.EOF {
+		t.Fatalf("second Next = %v, want io.EOF", err)
+	}
+	_ = r.Close()
 }

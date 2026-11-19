@@ -21,7 +21,10 @@ type stmt struct {
 	generation uint64
 	// openRows counts the rows from Query that may still FETCH with
 	// queryHandle. While it is positive, Close defers CLOSE_REQ to the last
-	// of those rows to close (#86). closed, queryHandle and openRows are
+	// of those rows to close, and Exec and Query do not EXECUTE queryHandle
+	// again, because the CAS would replace the cursor those rows fetch from
+	// with the new result; they use PREPARE_AND_EXECUTE, which gives the new
+	// execution its own handle (#86). closed, queryHandle and openRows are
 	// guarded by conn.mu.
 	openRows int
 }
@@ -58,6 +61,18 @@ func (s *stmt) releaseHandleLocked() {
 	}
 }
 
+// sqlForExecLocked returns the statement's SQL with args interpolated, or
+// the SQL as prepared when there are none. The caller holds conn.mu.
+func (s *stmt) sqlForExecLocked(args []driver.Value) (string, error) {
+	if len(args) == 0 {
+		return s.query, nil
+	}
+	if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
+		return "", err
+	}
+	return InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
+}
+
 // NumInput returns the number of ? placeholders the server found during Prepare.
 // database/sql uses this to validate argument counts before calling Exec/Query.
 func (s *stmt) NumInput() int { return s.bindCount }
@@ -78,12 +93,12 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	var res *ExecuteResult
 	var paeRes *PrepareAndExecuteResult
 
-	if len(args) > 0 {
-		// Client-side interpolation: embed args into SQL, use FC=41.
-		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
-			return nil, err
-		}
-		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
+	if len(args) > 0 || s.openRows > 0 {
+		// Client-side interpolation: embed args into SQL, use FC=41. Without
+		// args, FC=41 is used while rows still fetch with the prepared
+		// handle, because executing that handle again would replace their
+		// server cursor (see openRows).
+		interpolatedSQL, err := s.sqlForExecLocked(args)
 		if err != nil {
 			return nil, err
 		}
@@ -153,12 +168,11 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	var gen uint64
 	var ownsHandle bool
 
-	if len(args) > 0 {
-		// Client-side interpolation: embed args into SQL, use FC=41.
-		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
-			return nil, err
-		}
-		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
+	if len(args) > 0 || s.openRows > 0 {
+		// Client-side interpolation: embed args into SQL, use FC=41. Without
+		// args, FC=41 gives these rows their own handle while earlier rows
+		// still fetch with the prepared one (see openRows).
+		interpolatedSQL, err := s.sqlForExecLocked(args)
 		if err != nil {
 			return nil, err
 		}

@@ -132,10 +132,21 @@ statement's rows, with no error ([#86](https://github.com/cubrid-lab/cubrid-go/i
 therefore counts, under `conn.mu`, the rows that may still fetch with a
 statement's handle. While there are any, `stmt.Close` only marks the
 statement closed, and the last of those rows to be closed, or to read its
-last row, sends the `CLOSE_REQ`. The rows keep working after the statement
-is closed, as they do for a `*sql.DB` statement. If the connection has
-reconnected in the meantime, the deferred close sends nothing, like any
-other handle from an earlier session.
+last row, sends the `CLOSE_REQ`. When it is the final `rows.Next` that sends
+it, that `Next` makes one extra round trip, under `conn.mu` like any other
+request. The rows keep working after the statement is closed, as they do
+for a `*sql.DB` statement. If the connection has reconnected in the
+meantime, the deferred close sends nothing, like any other handle from an
+earlier session.
+
+Executing the statement again while such rows are open has the same root:
+`EXECUTE` on the prepared handle makes the CAS replace the cursor those rows
+fetch from, and on CUBRID 11.2 they went on to read the new result from
+their own offset, with no error. While rows from a statement can still
+fetch, `stmt.Query` and `stmt.Exec` without arguments therefore run the
+statement's SQL with `PREPARE_AND_EXECUTE`, which gives the new execution
+its own handle, as they always do with arguments. Each result set reads its
+own rows.
 
 ## Known limitations
 
@@ -157,9 +168,9 @@ expect:
   by [#88](https://github.com/cubrid-lab/cubrid-go/issues/88).
 - A statement closed while rows from it are open keeps its server handle,
   one of the CAS's limited query entries, until those rows are closed or
-  have read their last row. `database/sql` always closes its `Rows`; rows
-  used directly through the driver and never closed hold the handle until
-  the connection closes.
+  have read their last row. `database/sql` closes its `Rows` when they are
+  drained, the `Tx` ends or the context is canceled; rows that are never
+  closed hold the connection, and with it the handle.
 
 ## Tests
 
@@ -169,12 +180,13 @@ Run with `go test -race`:
   `Tx` is closed from another goroutine while `Rows.Next` waits for a FETCH
   reply on the same connection; the CAS must receive nothing until that reply
   has been read.
-- `TestTxStmtCloseReleasesHandleOfOpenRows`, `TestStmtCloseDeferredUntilRowsClose`,
-  `TestStmtCloseAfterRowsDrainedToEOF`, `TestStmtCloseWaitsForAllOpenRows`
-  and `TestDeferredStmtCloseDropsStaleHandle`: closing a statement while its
-  rows are open defers the `CLOSE_REQ` until the last of them is done, the
-  CAS never receives a `FETCH` after it, and a deferred close of a handle
-  from an earlier session sends nothing (#86).
+- `TestTxStmtCloseReleasesHandleOfOpenRows` and the tests in
+  `stmt_close_test.go`: closing a statement while its rows are open defers
+  the `CLOSE_REQ` until the last of them is done, the CAS never receives a
+  `FETCH` after it, a deferred close of a handle from an earlier session
+  sends nothing, and executing the statement again while its rows are open
+  uses a new handle (#86). `TestTxStmtCloseWithOpenRowsIntegration` and
+  `TestStmtReexecuteWithOpenRowsIntegration` check both on a live server.
 - `TestRowsClosedByCancelWhileNextReconnects`: `database/sql` closes rows on
   context cancellation while `Next` reconnects; no later session receives the
   old handle.
