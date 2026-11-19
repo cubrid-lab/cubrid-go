@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `database/sql` panics on the second registration.
 
 ### Fixed
+- **A canceled request could wait for the `CHECK_CAS` deadline, or crash the
+  process (#39):** When a context was canceled just before the
+  out-of-transaction `CHECK_CAS` check set its own socket deadline, that
+  deadline replaced the cancellation, so the request returned only after the
+  `timeout` DSN option (30s by default) or never with `timeout=0`, if the CAS
+  stopped answering. A cancellation is now sticky for the rest of the request:
+  every socket deadline the request sets afterwards, including on a socket
+  opened by a reconnect, keeps the socket expired, and the request returns
+  `context.Canceled` promptly. The cancel watcher also read the connection's
+  socket while a reconnect replaced it; canceling while the driver was dialing
+  the broker dereferenced a nil socket and panicked. The watcher now reads the
+  socket under a lock and skips a missing one, and it is stopped and waited
+  for before the request ends, so a late cancellation cannot expire the socket
+  of the next request on the connection.
 - **Prevent duplicated writes after a lost CAS response (#41):** A request
   accepted by the socket can already have executed at the server even if
   CUBRID drops the reply. `roundTrip` now returns a non-retriable

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -355,5 +356,127 @@ func TestCheckCASRestoresRequestDeadline(t *testing.T) {
 	c.endRequest()
 	if c.reqCtx != nil || !c.reqDeadline.IsZero() {
 		t.Fatalf("endRequest did not clear the request state")
+	}
+}
+
+// probeRaceConn lets the cancel watcher expire the socket deadline just before
+// the CHECK_CAS probe installs its own deadline. The first SetDeadline call is
+// the probe's: it cancels the request and waits until the watcher's expiry
+// (the second call) has been applied, then applies the probe deadline.
+type probeRaceConn struct {
+	net.Conn
+	cancel  context.CancelFunc
+	calls   atomic.Int32
+	expired chan struct{}
+}
+
+func (p *probeRaceConn) SetDeadline(t time.Time) error {
+	switch p.calls.Add(1) {
+	case 1:
+		p.cancel()
+		select {
+		case <-p.expired:
+		case <-time.After(2 * time.Second):
+		}
+	case 2:
+		err := p.Conn.SetDeadline(t)
+		close(p.expired)
+		return err
+	}
+	return p.Conn.SetDeadline(t)
+}
+
+// TestCancelBeforeProbeDeadlineReturnsPromptly verifies that a cancellation
+// is not lost when the cancel watcher expires the socket just before the
+// CHECK_CAS probe sets its deadline, and the CAS never answers. The request
+// must return context.Canceled at once instead of waiting for the probe
+// deadline (the DSN timeout), or forever when the DSN sets timeout=0 (#39).
+func TestCancelBeforeProbeDeadlineReturnsPromptly(t *testing.T) {
+	for name, timeout := range map[string]time.Duration{
+		"default timeout": 30 * time.Second,
+		"no timeout":      0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe() // the CAS never reads the probe
+			defer func() { _ = server.Close() }()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sock := &probeRaceConn{Conn: client, cancel: cancel, expired: make(chan struct{})}
+			c := &conn{socket: sock, timeout: timeout, autoCommit: true, protoVer: ProtoVersion}
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected context.Canceled, got %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("canceled request waited for the CHECK_CAS probe deadline")
+			}
+			if sock.calls.Load() < 2 {
+				t.Fatalf("the watcher never expired the socket before the probe")
+			}
+			if !c.closed {
+				t.Fatalf("connection must be unusable after an interrupted probe")
+			}
+		})
+	}
+}
+
+// TestCancelDuringReconnectDial verifies that canceling a request while the
+// driver is dialing the broker after a failed CHECK_CAS, when the connection
+// has no socket, neither crashes the cancel watcher nor races with the
+// reconnect that installs the new socket (#39).
+func TestCancelDuringReconnectDial(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		nc, err := l.Accept()
+		if err == nil {
+			accepted <- nc // hold the broker connection open and never answer
+		}
+	}()
+
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	go func() {
+		if _, err := readRequestFunc(server); err == nil {
+			_ = server.Close() // fail the probe so the driver reconnects
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &conn{socket: client, host: "127.0.0.1", port: l.Addr().(*net.TCPAddr).Port,
+		timeout: 300 * time.Millisecond, autoCommit: true, protoVer: ProtoVersion}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil)
+		done <- err
+	}()
+	select {
+	case nc := <-accepted:
+		defer func() { _ = nc.Close() }()
+	case <-time.After(2 * time.Second):
+		t.Fatal("driver did not reconnect after a failed CHECK_CAS")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled request did not return")
 	}
 }

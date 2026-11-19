@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +49,16 @@ type conn struct {
 	// may already use the same number for another statement, so such a
 	// handle must never be sent (see sendAndRecvHandle).
 	generation uint64
+	// sockMu lets the cancel watcher read socket while the request goroutine,
+	// which holds mu for the whole request, replaces it during a reconnect.
+	// socket is written only with both mu and sockMu held (see setSocket).
+	sockMu sync.Mutex
+	// canceled records that the running request's context was canceled. The
+	// watcher sets it before expiring the socket deadline, and every deadline
+	// that the request path sets afterwards keeps the socket expired, so a
+	// later deadline (such as the CHECK_CAS probe's) cannot undo a
+	// cancellation. stopWatch clears it.
+	canceled atomic.Bool
 }
 
 // errStaleHandle reports that a server handle was created on an earlier
@@ -97,18 +108,20 @@ func (c *conn) connect() error {
 	if newPort > 0 {
 		_ = brokerConn.Close()
 		casAddr := fmt.Sprintf("%s:%d", c.host, newPort)
-		c.socket, err = net.DialTimeout("tcp", casAddr, c.timeout)
+		var casConn net.Conn
+		casConn, err = net.DialTimeout("tcp", casAddr, c.timeout)
+		c.setSocket(casConn)
 		if err != nil {
 			return &OperationalError{CubridError{Code: -1,
 				Message: fmt.Sprintf("dial CAS %s: %v", casAddr, err)}}
 		}
 	} else {
 		// Port 0 means the CAS is on the same connection.
-		c.socket = brokerConn
+		c.setSocket(brokerConn)
 	}
 
 	if c.timeout > 0 {
-		_ = c.socket.SetDeadline(time.Now().Add(c.timeout))
+		_ = c.setSocketDeadline(time.Now().Add(c.timeout))
 	}
 
 	// Step 4: send OpenDatabase (628 bytes, no framing header).
@@ -131,8 +144,36 @@ func (c *conn) connect() error {
 	// no_backslash_escapes setting, so force re-negotiation on next use.
 	c.stringEscapeMode = stringEscapeModeUnknown
 
-	_ = c.socket.SetDeadline(time.Time{})
+	_ = c.setSocketDeadline(time.Time{})
 	return nil
+}
+
+// setSocket installs s as the connection's socket. If the running request
+// was already canceled, s starts with an expired deadline, because the cancel
+// watcher may have run while there was no socket to expire.
+func (c *conn) setSocket(s net.Conn) {
+	c.sockMu.Lock()
+	c.socket = s
+	c.sockMu.Unlock()
+	if s != nil && c.canceled.Load() {
+		_ = s.SetDeadline(time.Now())
+	}
+}
+
+// setSocketDeadline sets the socket deadline for the running request. If the
+// request was canceled, it leaves the socket expired: the flag is checked
+// after the deadline is set, so a cancellation that lands in between is
+// still applied, either here or by the watcher, which sets the flag before
+// it expires the socket.
+func (c *conn) setSocketDeadline(t time.Time) error {
+	if c.socket == nil {
+		return nil
+	}
+	err := c.socket.SetDeadline(t)
+	if c.canceled.Load() {
+		_ = c.socket.SetDeadline(time.Now())
+	}
+	return err
 }
 
 // ─── Low-level I/O ────────────────────────────────────────────────────────────
@@ -262,7 +303,7 @@ func (c *conn) checkReconnect() error {
 		return nil
 	}
 	_ = c.socket.Close()
-	c.socket = nil
+	c.setSocket(nil)
 	if err := c.connect(); err != nil {
 		return err
 	}
@@ -271,7 +312,7 @@ func (c *conn) checkReconnect() error {
 		return err
 	}
 	if !c.reqDeadline.IsZero() {
-		return c.socket.SetDeadline(c.reqDeadline)
+		return c.setSocketDeadline(c.reqDeadline)
 	}
 	return nil
 }
@@ -279,7 +320,8 @@ func (c *conn) checkReconnect() error {
 // checkCAS sends CHECK_CAS (FC=32) on the current socket and reports whether
 // the CAS answered successfully. The probe is bounded by the connection
 // timeout and by the request deadline, whichever is earlier; the request
-// deadline is restored afterward.
+// deadline is restored afterward. Neither deadline undoes a cancellation of
+// the request (see setSocketDeadline).
 func (c *conn) checkCAS() bool {
 	probeDeadline := c.reqDeadline
 	if c.timeout > 0 {
@@ -287,8 +329,8 @@ func (c *conn) checkCAS() bool {
 			probeDeadline = d
 		}
 	}
-	_ = c.socket.SetDeadline(probeDeadline)
-	defer func() { _ = c.socket.SetDeadline(c.reqDeadline) }()
+	_ = c.setSocketDeadline(probeDeadline)
+	defer func() { _ = c.setSocketDeadline(c.reqDeadline) }()
 
 	if err := c.send(WriteCheckCas(c.casInfo)); err != nil {
 		return false
@@ -328,21 +370,40 @@ func namedValuesToValues(args []driver.NamedValue) ([]driver.Value, error) {
 	return values, nil
 }
 
+// watchContextCancel interrupts the running request's socket I/O when ctx is
+// canceled. The caller holds c.mu for the whole request, so the watcher reads
+// the socket under sockMu instead: a reconnect may replace the socket, or
+// leave none while it dials. The returned stop function waits for the watcher
+// to exit and clears the cancellation flag, so a late cancellation cannot
+// leak into the next request on this connection; call it before endRequest,
+// which then clears any deadline the watcher left behind.
 func (c *conn) watchContextCancel(ctx context.Context) func() {
 	if c.socket == nil {
 		return func() {}
 	}
 
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case <-ctx.Done():
-			_ = c.socket.SetDeadline(time.Now())
+			c.canceled.Store(true)
+			c.sockMu.Lock()
+			s := c.socket
+			c.sockMu.Unlock()
+			if s != nil {
+				_ = s.SetDeadline(time.Now())
+			}
 		case <-done:
 		}
 	}()
 
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-exited
+		c.canceled.Store(false)
+	}
 }
 
 func (c *conn) applyContextDeadline(ctx context.Context) error {
@@ -626,9 +687,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err := c.applyContextDeadline(ctx); err != nil {
 		return nil, err
 	}
+	defer c.endRequest()
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -689,9 +750,9 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err := c.applyContextDeadline(ctx); err != nil {
 		return nil, err
 	}
+	defer c.endRequest()
 	stopWatch := c.watchContextCancel(ctx)
 	defer stopWatch()
-	defer c.endRequest()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
