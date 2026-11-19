@@ -112,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[]byte` parameter for binary data.
 
 ### Added
+- [Concurrency and reconnects](docs/CONCURRENCY.md) (#20): what is safe to
+  share between goroutines, how `database/sql` and the driver serialize the
+  requests of one connection, which lock protects each piece of connection
+  state, and how an automatic reconnect interacts with requests in flight.
+  Race-detector tests through `database/sql` cover a statement closed during a
+  fetch, rows closed on cancellation during a reconnect, and concurrent use of
+  one pool across broker restarts.
 - `InterpolateArgsWithMode` / `FormatValueWithMode` and the `StringEscapeMode`
   type for explicit, connection-aware string escaping. `InterpolateArgs` and
   `FormatValue` remain as literal-backslash (CUBRID-default) wrappers for

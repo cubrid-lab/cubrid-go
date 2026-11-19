@@ -225,6 +225,7 @@ Measure under production-like load and adjust from there. If requests begin queu
 - The pool limit should stay below the available CUBRID broker worker capacity. Setting `MaxOpenConns` higher than the broker can actually serve only shifts contention downstream.
 - `PingContext()` is a good readiness or startup check because it fails fast when the broker is unavailable or the DSN is invalid.
 - If your deployment has multiple application instances, size the pool per instance, not just per service. For example, `25` open connections across `4` replicas can become `100` broker sessions.
+- Each pooled connection is one CAS session and runs one request at a time; goroutines run in parallel on different connections. `*sql.DB` is safe for concurrent use, and an automatic reconnect affects only the connection whose request triggered it. See [Concurrency](docs/CONCURRENCY.md) for the full contract.
 
 ## Supported Features
 
@@ -373,6 +374,7 @@ All subsequent requests use the `PREPARE_AND_EXECUTE` (function code 41) combine
 | [API Reference](docs/API_REFERENCE.md) | Complete `database/sql` driver API, DSN format, type mapping, error types, protocol details |
 | [GORM Guide](docs/GORM.md) | GORM dialector setup, models, migrations, CRUD, transactions, querying, schema inspection |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Connection, query, transaction, GORM, type, and performance issues with solutions |
+| [Concurrency](docs/CONCURRENCY.md) | What is safe to share between goroutines, how requests on one connection are serialized, and how reconnects interact with them |
 
 ## FAQ
 
