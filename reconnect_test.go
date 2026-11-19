@@ -601,7 +601,17 @@ func TestSetSocketExpiresWhenAlreadyCanceled(t *testing.T) {
 	c := &conn{}
 	c.canceled.Store(true)
 	c.setSocket(client)
-	_, err := client.Write([]byte{0})
+	written := make(chan error, 1)
+	go func() {
+		_, err := client.Write([]byte{0}) // nobody reads: only a deadline ends it
+		written <- err
+	}()
+	var err error
+	select {
+	case err = <-written:
+	case <-time.After(time.Second):
+		t.Fatal("socket installed after cancellation was not expired")
+	}
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("write on a socket installed after cancellation: got %v, want a timeout", err)
