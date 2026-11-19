@@ -34,6 +34,10 @@ jobs:
         run: |
           set -euo pipefail
           version=$(jq -er '."."' .release-please-manifest.json)
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$version' in .release-please-manifest.json."
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if out=$(gh api "repos/$GH_REPO/git/ref/tags/v$version" 2>&1); then
             echo "tagged=true" >> "$GITHUB_OUTPUT"
@@ -58,11 +62,21 @@ jobs:
         run: |
           set -euo pipefail
           title="chore(main): release $VERSION"
-          prs=$(gh pr list --repo "$GH_REPO" --state merged --label "autorelease: pending" \
-            --limit 100 --json number,title \
-            | jq -r --arg title "$title" '.[] | select(.title == $title) | .number')
+          pending=$(gh pr list --repo "$GH_REPO" --base main --state merged \
+            --label "autorelease: pending" --limit 100 --json number,title)
+          prs=$(jq -r --arg title "$title" '.[] | select(.title == $title) | .number' <<<"$pending")
+          others=$(jq -r --arg title "$title" '[.[] | select(.title != $title) | "#\(.number)"] | join(", ")' <<<"$pending")
+          if [[ -n $others ]]; then
+            echo "::warning::Merged PRs still labelled 'autorelease: pending' do not match '$title': $others. Check and relabel them by hand."
+          fi
           for pr in $prs; do
-            gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/autorelease%3A%20pending" >/dev/null
+            if ! out=$(gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/autorelease%3A%20pending" 2>&1); then
+              if ! grep -q "HTTP 404" <<<"$out"; then
+                echo "$out"
+                echo "::error::Could not remove 'autorelease: pending' from #$pr."
+                exit 1
+              fi
+            fi
             if gh api "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=autorelease: tagged" >/dev/null; then
               echo "Release PR #$pr for v$VERSION marked as tagged" >> "$GITHUB_STEP_SUMMARY"
             else

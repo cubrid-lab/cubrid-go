@@ -96,6 +96,10 @@ the note. See [RELEASE_NOTES_QUALITY.md](RELEASE_NOTES_QUALITY.md).
   if any note contains `github.com/cubrid-labs/`. The PR check does not catch
   this. In the note, name the old module path without the `github.com/`
   prefix, or link to the CHANGELOG upgrade notes.
+- Date the note's heading (`## vX.Y.Z (YYYY-MM-DD)`) with the planned tag
+  date. If the tag slips to another day, correct the date in a follow-up
+  `docs:` PR; after it merges, `sync-release-notes.yml` updates the existing
+  GitHub Release description.
 - Merging the note before the tag exists is safe: the sync workflow skips
   versions that have no GitHub Release.
 - For the first release under the new module path, repoint the README's
