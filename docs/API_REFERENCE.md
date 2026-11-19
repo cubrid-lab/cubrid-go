@@ -114,6 +114,7 @@ cubrid-go implements the standard `database/sql/driver` interfaces:
 | `driver.Tx` | `tx` | Transaction (COMMIT / ROLLBACK) |
 | `driver.Result` | `result` | LastInsertId + RowsAffected |
 | `driver.Pinger` | `conn` | Connection health check |
+| `driver.Validator` | `conn` | Keeps a connection retired by an interrupted request out of the pool |
 | `driver.QueryerContext`, `driver.ExecerContext`, `driver.ConnBeginTx` | `conn` | Context-aware query, exec and begin |
 
 ### sql.Open
@@ -279,7 +280,7 @@ if err := db.Ping(); err != nil {
 }
 ```
 
-Ping sends a `GET_DB_VERSION` request (FC=15) to the server and expects a version string back, on a pooled connection as well as on a new one. `db.PingContext` honors its context: canceling it, or reaching its deadline, interrupts the request and returns the context's error. If the connection is dead and the driver cannot reconnect (for example, the broker is down), Ping returns `driver.ErrBadConn`; `database/sql` returns that error and discards the connection instead of returning it to the pool. Like any request, a ping on an idle connection first checks the CAS with `CHECK_CAS` and reconnects if the CAS dropped the session while the broker is still up.
+Ping sends a `GET_DB_VERSION` request (FC=15) to the server and expects a version string back, on a pooled connection as well as on a new one. `db.PingContext` honors its context: canceling it, or reaching its deadline, interrupts the request and returns the context's error. If the connection is dead and the driver cannot reconnect (for example, the broker is down), Ping returns an error that matches `driver.ErrBadConn` (`errors.Is`) and names the cause; `database/sql` returns that error, without retrying the ping on another connection, and discards the connection instead of returning it to the pool. A connection whose ping (or query) was interrupted by its context is retired, and the driver's `driver.Validator` implementation makes `database/sql` close it rather than reuse it. Like any request, a ping on an idle connection first checks the CAS with `CHECK_CAS` and reconnects if the CAS dropped the session while the broker is still up.
 
 ---
 
@@ -493,7 +494,7 @@ if err != nil {
 }
 defer conn.Close()
 
-// The Ping method internally uses GET_DB_VERSION
+// db.Ping sends GET_DB_VERSION but does not return the version string.
 // To get the version string, use a raw SQL query:
 var version string
 err = db.QueryRow("SELECT VERSION()").Scan(&version)

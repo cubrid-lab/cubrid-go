@@ -81,6 +81,7 @@ the reply. Every path that can send a request or reconnect holds it:
 | `rows.Next` (when it fetches more rows), `rows.Close` (when the rows own their handle), and either of them when it sends a closed statement's deferred `CLOSE_REQ` | yes | yes | no |
 | `tx.Commit`, `tx.Rollback` | yes | yes | no |
 | `conn.Begin`, `conn.BeginTx` | no (nothing is sent) | yes | no |
+| `conn.IsValid` (`driver.Validator`; reads `closed` so `database/sql` drops a retired connection instead of pooling it) | no (nothing is sent) | yes | no |
 | `conn.Close` | no | yes | no |
 
 ### Connection state and what protects it
@@ -196,7 +197,8 @@ Run with `go test -race`:
   other tests in `ping_test.go`: `db.PingContext` sends `GET_DB_VERSION` on a
   pooled connection, returns promptly when its context is canceled or its
   deadline passes, and a dead connection returns `driver.ErrBadConn` and is
-  discarded from the pool (#88).
+  discarded from the pool; a connection retired by a canceled ping or query
+  is not reused (`driver.Validator`) (#88).
 - `TestCancelWatcherSkipsSocketClearedByReconnect`,
   `TestLateCancelDoesNotLeakIntoNextRequest`, `TestCancelDuringReconnectDial`
   and the stale-handle tests in `stale_handle_test.go` cover the cancel

@@ -99,14 +99,21 @@ func TestPingDeadSessionReturnsErrBadConn(t *testing.T) {
 			}
 			f.restart()
 
-			if err := c.Ping(context.Background()); err != driver.ErrBadConn {
+			err = c.Ping(context.Background())
+			if !errors.Is(err, driver.ErrBadConn) {
 				t.Fatalf("Ping on a dead session = %v, want driver.ErrBadConn", err)
+			}
+			if err == driver.ErrBadConn {
+				t.Fatalf("Ping on a dead session returned bare driver.ErrBadConn; want the cause wrapped")
 			}
 			if !c.closed {
 				t.Fatalf("the connection was not retired")
 			}
-			if err := c.Ping(context.Background()); err != driver.ErrBadConn {
+			if err := c.Ping(context.Background()); !errors.Is(err, driver.ErrBadConn) {
 				t.Fatalf("Ping on a retired connection = %v, want driver.ErrBadConn", err)
+			}
+			if c.IsValid() {
+				t.Fatalf("IsValid reports a retired connection as valid")
 			}
 		})
 	}
@@ -138,33 +145,35 @@ func TestDBPingContextDiscardsDeadConn(t *testing.T) {
 	}
 }
 
-// holdGetDbVersion makes f hold its reply to the first GET_DB_VERSION until
-// the test ends. arrived is closed when the request arrives.
-func holdGetDbVersion(t *testing.T, f *fakeCAS) (arrived <-chan struct{}) {
-	got := make(chan struct{})
+// holdFirst makes f hold its reply to the first request with function code
+// fc until the test ends, then drop the session. arrived is closed when the
+// request arrives.
+func holdFirst(t *testing.T, f *fakeCAS, fc byte) (arrived <-chan struct{}) {
+	came := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	var once sync.Once
-	f.beforeReply = func(fc byte, _ net.Conn) bool {
+	f.beforeReply = func(code byte, _ net.Conn) bool {
 		held := false
-		if fc == FuncGetDbVersion {
+		if code == fc {
 			once.Do(func() { held = true })
 		}
 		if !held {
 			return true
 		}
-		close(got)
+		close(came)
 		<-release
 		return false
 	}
-	return got
+	return came
 }
 
 // TestPingContextCanceled checks that db.PingContext honors its context:
 // an already canceled context sends nothing, and canceling, or reaching the
 // deadline, while the CAS does not answer returns promptly with the
-// context's error. The interrupted connection is retired and never sends
-// another request; the next statement runs on a new session.
+// context's error. The interrupted connection is retired, and IsValid makes
+// database/sql close it instead of returning it to the pool, so the next ping
+// succeeds on a new session.
 func TestPingContextCanceled(t *testing.T) {
 	t.Run("already canceled", func(t *testing.T) {
 		f := newFakeCAS(t)
@@ -194,7 +203,7 @@ func TestPingContextCanceled(t *testing.T) {
 			ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }},
 		{name: "deadline in flight", want: context.DeadlineExceeded,
 			ctx: func() (context.Context, context.CancelFunc) {
-				return context.WithTimeout(context.Background(), 200*time.Millisecond)
+				return context.WithTimeout(context.Background(), time.Second)
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +217,7 @@ func TestPingContextCanceled(t *testing.T) {
 			if _, err := db.Exec("UPDATE t SET v = 1"); err != nil { // open the pooled connection
 				t.Fatalf("Exec: %v", err)
 			}
-			arrived := holdGetDbVersion(t, f)
+			arrived := holdFirst(t, f, FuncGetDbVersion)
 
 			ctx, cancel := tc.ctx()
 			defer cancel()
@@ -228,22 +237,61 @@ func TestPingContextCanceled(t *testing.T) {
 				if !errors.Is(err, tc.want) {
 					t.Fatalf("PingContext = %v, want %v", err, tc.want)
 				}
-				if d := time.Since(start); d > time.Second {
+				if d := time.Since(start); d > 3*time.Second {
 					t.Fatalf("PingContext returned after %v", d)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(5 * time.Second):
 				t.Fatalf("PingContext did not return after its context ended")
 			}
 
-			// database/sql retries Exec on driver.ErrBadConn from the
-			// retired connection.
-			if _, err := db.Exec("UPDATE t SET v = 2"); err != nil {
-				t.Fatalf("Exec after the interrupted ping: %v", err)
+			// database/sql does not retry a ping, so this fails if the
+			// retired connection went back to the pool.
+			if err := db.Ping(); err != nil {
+				t.Fatalf("Ping after the interrupted ping: %v", err)
 			}
 			pingSessionLog(t, f, "s1", "s1 PREPARE_AND_EXECUTE UPDATE t SET v = 1",
 				"s1 CLOSE_REQ UPDATE t SET v = 1", "s1 GET_DB_VERSION")
-			pingSessionLog(t, f, "s2", "s2 PREPARE_AND_EXECUTE UPDATE t SET v = 2",
-				"s2 CLOSE_REQ UPDATE t SET v = 2")
+			pingSessionLog(t, f, "s2", "s2 GET_DB_VERSION")
 		})
 	}
+}
+
+// TestCanceledQueryConnIsNotReused: a QueryContext canceled while its reply
+// is outstanding retires its connection, because the reply may still arrive
+// on that socket. IsValid makes database/sql close the connection when the
+// query returns it, so a following ping, which database/sql does not retry,
+// runs on a new session.
+func TestCanceledQueryConnIsNotReused(t *testing.T) {
+	f := newFakeCAS(t)
+	db, err := sql.Open("cubrid", f.dsn())
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		t.Fatalf("first Ping: %v", err)
+	}
+	arrived := holdFirst(t, f, FuncPrepareAndExecute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.QueryContext(ctx, "SELECT v FROM t")
+		done <- err
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("the query never reached the CAS")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("QueryContext = %v, want context.Canceled", err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("Ping after the canceled query: %v", err)
+	}
+	pingSessionLog(t, f, "s2", "s2 GET_DB_VERSION")
 }

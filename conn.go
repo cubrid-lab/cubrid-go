@@ -18,8 +18,8 @@ import (
 const defaultFetchSize = 100
 
 // conn is a single TCP connection to the CUBRID CAS broker.
-// It implements driver.Conn, driver.Pinger, driver.ConnBeginTx,
-// driver.QueryerContext and driver.ExecerContext.
+// It implements driver.Conn, driver.Pinger, driver.Validator,
+// driver.ConnBeginTx, driver.QueryerContext and driver.ExecerContext.
 type conn struct {
 	mu         sync.Mutex
 	socket     net.Conn
@@ -71,6 +71,7 @@ var _ driver.QueryerContext = (*conn)(nil)
 var _ driver.ExecerContext = (*conn)(nil)
 var _ driver.ConnBeginTx = (*conn)(nil)
 var _ driver.Pinger = (*conn)(nil)
+var _ driver.Validator = (*conn)(nil)
 
 // connect performs the two-step CUBRID broker handshake and opens the database.
 func (c *conn) connect() error {
@@ -684,13 +685,15 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 // session with CHECK_CAS and reconnects if the CAS is gone. ctx bounds the
 // whole exchange and canceling it interrupts it, as for QueryContext.
 //
-// It returns driver.ErrBadConn when the session cannot be used: the
-// connection is closed, the request could not be sent, the reply was lost or
-// a reconnect failed. database/sql then closes the connection instead of
-// returning it to the pool, and db.PingContext returns the error (it does not
-// retry the ping on another connection). GET_DB_VERSION changes nothing on
-// the server, so ErrBadConn is safe even when the request was sent. If ctx
-// ends first, Ping returns ctx's error instead.
+// It returns an error that matches driver.ErrBadConn (errors.Is) when the
+// session cannot be used: the connection is closed, the request could not be
+// sent, the reply was lost or a reconnect failed. The cause is wrapped in the
+// message. database/sql then closes the connection instead of returning it to
+// the pool, and db.PingContext returns the error (it does not retry the ping
+// on another connection). GET_DB_VERSION changes nothing on the server, so
+// ErrBadConn is safe even when the request was sent. If ctx ends first, Ping
+// returns ctx's error instead; the connection is then retired, and IsValid
+// keeps database/sql from reusing it.
 func (c *conn) Ping(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -713,10 +716,24 @@ func (c *conn) Ping(ctx context.Context) error {
 		if ctxErr := c.requestErr(); ctxErr != nil {
 			return ctxErr
 		}
-		return driver.ErrBadConn
+		if errors.Is(err, driver.ErrBadConn) {
+			return err
+		}
+		return fmt.Errorf("%w: cubrid ping: %v", driver.ErrBadConn, err)
 	}
 	_, err = ParseGetDbVersion(resp)
 	return err
+}
+
+// IsValid implements driver.Validator. database/sql calls it before it
+// returns a connection to the pool or reuses one: a connection that a
+// request retired (a canceled or timed-out request whose reply may still be
+// in flight, a lost reply, a failed reconnect) is closed instead of being
+// handed to the next caller.
+func (c *conn) IsValid() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed
 }
 
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
