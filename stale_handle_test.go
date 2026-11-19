@@ -30,7 +30,8 @@ type fakeCAS struct {
 	// or EXECUTE of a prepared SELECT) reports alongside its single inline row.
 	rowsTotal int32
 	// dropAfterInsert makes a session close its socket right after it
-	// answers an INSERT, as a CAS restart between two requests does.
+	// answers an INSERT, as a CAS restart between two requests does. It
+	// applies to every session the fake serves, not only the first.
 	dropAfterInsert bool
 }
 
@@ -496,7 +497,10 @@ func TestStalePreparedQueryIsNotSentOnNewSession(t *testing.T) {
 // no-argument prepared stmt.Query. Their server cursor exists only on the
 // session that executed the statement. After a reconnect, Next must not FETCH
 // that handle on the new session, where the same number names another
-// statement, and Close must not send CLOSE_REQ for it (#43).
+// statement (#43). Close sends nothing for these rows whatever the
+// generation, because the handle belongs to the prepared statement
+// (closeHandle is false), so FETCH is the only request here that depends on
+// the generation check; the CLOSE_REQ assertion pins that ownership rule.
 func TestStalePreparedRowsAreNotFetchedOnNewSession(t *testing.T) {
 	f := newFakeCAS(t)
 	f.rowsTotal = 2
@@ -573,6 +577,9 @@ func TestExecDropsInsertHandleWhenLastInsertIDReconnects(t *testing.T) {
 	if got := sessionLog(f.entries(), "s1"); len(got) != 1 || got[0] != "s1 PREPARE_AND_EXECUTE INSERT INTO t (v) VALUES (1)" {
 		t.Fatalf("first session received %q, want only the INSERT", got)
 	}
+	// If the INSERT's handle were sent, it would show up as a second
+	// "s2 CLOSE_REQ SELECT LAST_INSERT_ID()" line: both handles are number 1,
+	// and on the new session number 1 is the LAST_INSERT_ID() query.
 	got := sessionLog(f.entries(), "s2")
 	want := []string{
 		"s2 PREPARE_AND_EXECUTE SELECT LAST_INSERT_ID()",
