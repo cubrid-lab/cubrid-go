@@ -203,6 +203,12 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 				handles[i-1] = fmt.Sprintf("released handle %d", h)
 			}
 			reply = simpleResponsePacket(0)
+		case FuncGetDbVersion:
+			f.record(name + " GET_DB_VERSION")
+			w := newPacketWriter()
+			w.writeInt(0)
+			w.writeRawBytes([]byte("11.2.0.0000\x00"))
+			reply = outTranPacket(w.toBytes())
 		case FuncConClose:
 			f.record(name + " CON_CLOSE")
 			return

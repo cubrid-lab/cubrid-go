@@ -18,9 +18,8 @@ import (
 const defaultFetchSize = 100
 
 // conn is a single TCP connection to the CUBRID CAS broker.
-// It implements driver.Conn, driver.ConnBeginTx, driver.QueryerContext and
-// driver.ExecerContext. Its Ping method takes no context, so it does not
-// implement driver.Pinger (tracked by #88).
+// It implements driver.Conn, driver.Pinger, driver.ConnBeginTx,
+// driver.QueryerContext and driver.ExecerContext.
 type conn struct {
 	mu         sync.Mutex
 	socket     net.Conn
@@ -71,6 +70,7 @@ var errStaleHandle = errors.New("cubrid: server handle belongs to an earlier phy
 var _ driver.QueryerContext = (*conn)(nil)
 var _ driver.ExecerContext = (*conn)(nil)
 var _ driver.ConnBeginTx = (*conn)(nil)
+var _ driver.Pinger = (*conn)(nil)
 
 // connect performs the two-step CUBRID broker handshake and opens the database.
 func (c *conn) connect() error {
@@ -678,17 +678,41 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	return &tx{conn: c}, nil
 }
 
-// Ping verifies the connection is still alive.
-func (c *conn) Ping() error {
+// Ping implements driver.Pinger: it sends GET_DB_VERSION (FC=15) and checks
+// the reply, so db.Ping and db.PingContext reach the server on a pooled
+// connection too. Like any request, it first probes an out-of-transaction
+// session with CHECK_CAS and reconnects if the CAS is gone. ctx bounds the
+// whole exchange and canceling it interrupts it, as for QueryContext.
+//
+// It returns driver.ErrBadConn when the session cannot be used: the
+// connection is closed, the request could not be sent, the reply was lost or
+// a reconnect failed. database/sql then closes the connection instead of
+// returning it to the pool, and db.PingContext returns the error (it does not
+// retry the ping on another connection). GET_DB_VERSION changes nothing on
+// the server, so ErrBadConn is safe even when the request was sent. If ctx
+// ends first, Ping returns ctx's error instead.
+func (c *conn) Ping(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
 		return driver.ErrBadConn
 	}
+	if err := c.applyContextDeadline(ctx); err != nil {
+		return err
+	}
+	defer c.endRequest()
+	stopWatch := c.watchContextCancel(ctx)
+	defer stopWatch()
+
 	req := WriteGetDbVersion(true, c.casInfo)
 	resp, err := c.sendAndRecv(req)
 	if err != nil {
+		// requestErr also catches a deadline that expired the socket just
+		// before ctx itself reports it.
+		if ctxErr := c.requestErr(); ctxErr != nil {
+			return ctxErr
+		}
 		return driver.ErrBadConn
 	}
 	_, err = ParseGetDbVersion(resp)

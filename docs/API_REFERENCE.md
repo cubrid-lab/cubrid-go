@@ -113,6 +113,7 @@ cubrid-go implements the standard `database/sql/driver` interfaces:
 | `driver.Rows` | `rows` | Lazy result set with server-side cursor |
 | `driver.Tx` | `tx` | Transaction (COMMIT / ROLLBACK) |
 | `driver.Result` | `result` | LastInsertId + RowsAffected |
+| `driver.Pinger` | `conn` | Connection health check |
 | `driver.QueryerContext`, `driver.ExecerContext`, `driver.ConnBeginTx` | `conn` | Context-aware query, exec and begin |
 
 ### sql.Open
@@ -278,7 +279,7 @@ if err := db.Ping(); err != nil {
 }
 ```
 
-The driver does not implement `driver.Pinger` yet ([#88](https://github.com/cubrid-lab/cubrid-go/issues/88)). `db.Ping` therefore reaches the server only when the pool has to open a new connection: the broker and OpenDatabase handshake fails if the broker is unreachable or the DSN is wrong. On an existing pooled connection it sends nothing. The driver's own `conn.Ping` method sends `GET_DB_VERSION` (FC=15), but `database/sql` does not call it.
+Ping sends a `GET_DB_VERSION` request (FC=15) to the server and expects a version string back, on a pooled connection as well as on a new one. `db.PingContext` honors its context: canceling it, or reaching its deadline, interrupts the request and returns the context's error. If the connection is dead and the driver cannot reconnect (for example, the broker is down), Ping returns `driver.ErrBadConn`; `database/sql` returns that error and discards the connection instead of returning it to the pool. Like any request, a ping on an idle connection first checks the CAS with `CHECK_CAS` and reconnects if the CAS dropped the session while the broker is still up.
 
 ---
 
@@ -492,8 +493,7 @@ if err != nil {
 }
 defer conn.Close()
 
-// The driver's conn.Ping method uses GET_DB_VERSION, but database/sql does
-// not call it (see #88).
+// The Ping method internally uses GET_DB_VERSION
 // To get the version string, use a raw SQL query:
 var version string
 err = db.QueryRow("SELECT VERSION()").Scan(&version)
@@ -570,6 +570,6 @@ All messages use big-endian byte order. Framed responses follow this structure:
 | 3 | `EXECUTE` | Execute a prepared statement |
 | 6 | `CLOSE_REQ_HANDLE` | Release a server-side handle |
 | 8 | `FETCH` | Fetch rows from a cursor |
-| 15 | `GET_DB_VERSION` | Get server version (used by the driver's `conn.Ping`; not reached through `db.Ping`, see #88) |
+| 15 | `GET_DB_VERSION` | Get server version (used for Ping) |
 | 31 | `CON_CLOSE` | Close the connection |
 | 41 | `PREPARE_AND_EXECUTE` | Prepare + execute in one round-trip |
