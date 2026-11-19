@@ -40,7 +40,7 @@ flowchart TD
 
 ## Benchmark Results
 
-Source: [cubrid-benchmark](https://github.com/cubrid-labs/cubrid-benchmark)
+Source: [cubrid-benchmark](https://github.com/cubrid-lab/cubrid-benchmark)
 
 Environment: Intel Core i5-9400F @ 2.90GHz, 6 cores, Linux x86_64, Docker containers.
 
@@ -81,7 +81,7 @@ flowchart TD
 
 ## Running Benchmarks
 
-1. Clone `https://github.com/cubrid-labs/cubrid-benchmark`.
+1. Clone `https://github.com/cubrid-lab/cubrid-benchmark`.
 2. Start benchmark databases with Docker per repository documentation.
 3. Run the Go benchmark suite (`cubrid-go` vs `go-sql-driver/mysql`).
 4. Use 1000 rows x 5 rounds to mirror the published parity run.

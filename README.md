@@ -9,12 +9,12 @@
 **Pure Go database driver for CUBRID** — `database/sql` interface + GORM dialector, no CGO required.
 
 <!-- BADGES:START -->
-[![Go Reference](https://pkg.go.dev/badge/github.com/cubrid-labs/cubrid-go.svg)](https://pkg.go.dev/github.com/cubrid-labs/cubrid-go)
-[![v0.2.1](https://img.shields.io/badge/version-v0.2.1-blue.svg)](https://github.com/cubrid-labs/cubrid-go/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cubrid-lab/cubrid-go.svg)](https://pkg.go.dev/github.com/cubrid-lab/cubrid-go)
+[![v0.2.1](https://img.shields.io/badge/version-v0.2.1-blue.svg)](https://github.com/cubrid-lab/cubrid-go/releases)
 [![Go 1.21+](https://img.shields.io/badge/go-1.21%2B-00ADD8.svg)](https://go.dev)
-[![CI](https://github.com/cubrid-labs/cubrid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/cubrid-labs/cubrid-go/actions/workflows/ci.yml)
-[![license](https://img.shields.io/github/license/cubrid-labs/cubrid-go)](https://github.com/cubrid-labs/cubrid-go/blob/main/LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/cubrid-labs/cubrid-go)](https://github.com/cubrid-labs/cubrid-go)
+[![CI](https://github.com/cubrid-lab/cubrid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/cubrid-lab/cubrid-go/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/cubrid-lab/cubrid-go)](https://github.com/cubrid-lab/cubrid-go/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/cubrid-lab/cubrid-go)](https://github.com/cubrid-lab/cubrid-go)
 <!-- BADGES:END -->
 
 ## Why cubrid-go?
@@ -33,10 +33,12 @@ cubrid-go speaks the CUBRID CAS protocol directly over TCP. No shared libraries,
 ## Installation
 
 ```bash
-go get github.com/cubrid-labs/cubrid-go
+go get github.com/cubrid-lab/cubrid-go
 ```
 
 **Requirements**: Go 1.21+
+
+> **Import path change:** the module path is `github.com/cubrid-lab/cubrid-go` starting with the first release after v0.2.1. v0.2.1 and earlier are published as `github.com/cubrid-labs/cubrid-go`. See the [upgrade notes](CHANGELOG.md#upgrade-notes) to migrate.
 
 ## Quick Start
 
@@ -50,7 +52,7 @@ import (
     "fmt"
     "log"
 
-    _ "github.com/cubrid-labs/cubrid-go"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 
 func main() {
@@ -91,7 +93,7 @@ import (
     "log"
 
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 
 type Athlete struct {
@@ -174,7 +176,7 @@ import (
     "log"
     "time"
 
-    _ "github.com/cubrid-labs/cubrid-go"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 
 func main() {
@@ -310,7 +312,7 @@ guessing, because an incorrect mode would silently corrupt string data.
 ## Error Types
 
 ```go
-import "github.com/cubrid-labs/cubrid-go"
+import "github.com/cubrid-lab/cubrid-go"
 
 // Base error
 var cubridErr *cubrid.CubridError
@@ -379,7 +381,7 @@ All subsequent requests use the `PREPARE_AND_EXECUTE` (function code 41) combine
 ```go
 import (
     "database/sql"
-    _ "github.com/cubrid-labs/cubrid-go"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 db, err := sql.Open("cubrid", "cubrid://dba:@localhost:33000/demodb")
 ```
@@ -389,7 +391,7 @@ db, err := sql.Open("cubrid", "cubrid://dba:@localhost:33000/demodb")
 ```go
 import (
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 db, err := gorm.Open(cubrid.Open("cubrid://dba:@localhost:33000/demodb"), &gorm.Config{})
 ```
@@ -422,8 +424,8 @@ Use the [development setup guide](docs/DEVELOPMENT_SETUP.md) for the actual lang
 
 | Package | Description |
 |:--------|:------------|
-| [cubrid-go](https://github.com/cubrid-labs/cubrid-go) | database/sql driver + GORM dialector |
-| [gorm-cubrid](https://github.com/cubrid-labs/gorm-cubrid) | GORM dialect for CUBRID |
+| [cubrid-go](https://github.com/cubrid-lab/cubrid-go) | database/sql driver + GORM dialector |
+| [gorm-cubrid](https://github.com/cubrid-lab/gorm-cubrid) | GORM dialect for CUBRID |
 
 ## Roadmap
 

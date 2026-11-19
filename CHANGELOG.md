@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Module path moved to `github.com/cubrid-lab/cubrid-go`.** The repository
+  lives under the `cubrid-lab` organization, and starting with the first
+  release after v0.2.1 the Go module path is `github.com/cubrid-lab/cubrid-go`
+  (GORM dialector: `github.com/cubrid-lab/cubrid-go/dialector`). Releases up
+  to and including v0.2.1 keep their published path,
+  `github.com/cubrid-labs/cubrid-go`, and stay fetchable under it through the
+  module proxy and the GitHub redirect. Newer releases exist only under the
+  new path: requesting one through the old path fails with a "module declares
+  its path as github.com/cubrid-lab/cubrid-go" error. To migrate:
+
+  ```sh
+  go get github.com/cubrid-lab/cubrid-go@latest
+  grep -rl 'github.com/cubrid-labs/cubrid-go' --include='*.go' . \
+    | xargs sed -i 's#github.com/cubrid-labs/cubrid-go#github.com/cubrid-lab/cubrid-go#g'
+  go mod tidy
+  ```
+
+  `go mod tidy` drops the old `github.com/cubrid-labs/cubrid-go` requirement
+  once no file imports it. On macOS use `sed -i ''`. Do not import both paths
+  in one program: each path registers the `cubrid` driver name, and
+  `database/sql` panics on the second registration.
+
 ### Fixed
 - **Prevent duplicated writes after a lost CAS response (#41):** A request
   accepted by the socket can already have executed at the server even if

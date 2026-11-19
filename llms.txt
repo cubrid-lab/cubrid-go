@@ -6,35 +6,33 @@ cubrid-go speaks the CUBRID CAS (Client Application Server) wire protocol direct
 
 Key facts:
 - DSN format: `cubrid://[user[:password]]@host[:port]/database[?autocommit=true&timeout=30s]`
-- Import path: `github.com/cubrid-labs/cubrid-go` (driver), `github.com/cubrid-labs/cubrid-go/dialector` (GORM)
-- Register: `import _ "github.com/cubrid-labs/cubrid-go"` then `sql.Open("cubrid", dsn)`
+- Import path: `github.com/cubrid-lab/cubrid-go` (driver), `github.com/cubrid-lab/cubrid-go/dialector` (GORM)
+- Register: `import _ "github.com/cubrid-lab/cubrid-go"` then `sql.Open("cubrid", dsn)`
 - GORM: `gorm.Open(cubrid.Open(dsn), &gorm.Config{})`
 - Features: parameterized queries, transactions, server-side cursors, result streaming, last insert ID, connection pooling (via `database/sql`)
 - GORM features: AutoMigrate, full CRUD, relationships, advanced queries
-- Install: `go get github.com/cubrid-labs/cubrid-go`
+- Install: `go get github.com/cubrid-lab/cubrid-go`
 
 ## Docs
 
-- [README](https://github.com/cubrid-labs/cubrid-go/blob/main/README.md): Full documentation with DSN format, usage examples, architecture, and feature table
-- [Product Requirements](https://github.com/cubrid-labs/cubrid-go/blob/main/PRD.md): Product requirements document with Example-first Design Philosophy
+- [README](https://github.com/cubrid-lab/cubrid-go/blob/main/README.md): Full documentation with DSN format, usage examples, architecture, and feature table
+- [Product Requirements](https://github.com/cubrid-lab/cubrid-go/blob/main/PRD.md): Product requirements document with Example-first Design Philosophy
 
 ## Examples
 
-- [database/sql Usage](https://github.com/cubrid-labs/cubrid-go/blob/main/README.md#usage-with-databasesql): Basic SQL driver usage with parameterized queries
-- [GORM Usage](https://github.com/cubrid-labs/cubrid-go/blob/main/README.md#usage-with-gorm): Full GORM ORM example with AutoMigrate, CRUD operations
-- [CUBRID Cookbook — cubrid-go](https://github.com/cubrid-labs/cubrid-cookbook/tree/main/go/cubrid-go): Production-ready Go examples — connect, CRUD, transactions
-- [CUBRID Cookbook — GORM](https://github.com/cubrid-labs/cubrid-cookbook/tree/main/go/gorm): GORM examples — connect, CRUD, relationships, advanced queries
+- [database/sql Usage](https://github.com/cubrid-lab/cubrid-go/blob/main/README.md#usage-with-databasesql): Basic SQL driver usage with parameterized queries
+- [GORM Usage](https://github.com/cubrid-lab/cubrid-go/blob/main/README.md#usage-with-gorm): Full GORM ORM example with AutoMigrate, CRUD operations
 
 ## API Reference
 
-- [Source — driver.go](https://github.com/cubrid-labs/cubrid-go/blob/main/driver.go): Driver registration and DSN parser
-- [Source — conn.go](https://github.com/cubrid-labs/cubrid-go/blob/main/conn.go): TCP connection and broker handshake
-- [Source — stmt.go](https://github.com/cubrid-labs/cubrid-go/blob/main/stmt.go): Statement — PrepareAndExecute
-- [Source — rows.go](https://github.com/cubrid-labs/cubrid-go/blob/main/rows.go): Rows — lazy server-side cursor
-- [Source — dialector/cubrid.go](https://github.com/cubrid-labs/cubrid-go/blob/main/dialector/cubrid.go): GORM Dialector and Migrator
+- [Source — driver.go](https://github.com/cubrid-lab/cubrid-go/blob/main/driver.go): Driver registration and DSN parser
+- [Source — conn.go](https://github.com/cubrid-lab/cubrid-go/blob/main/conn.go): TCP connection and broker handshake
+- [Source — stmt.go](https://github.com/cubrid-lab/cubrid-go/blob/main/stmt.go): Statement — PrepareAndExecute
+- [Source — rows.go](https://github.com/cubrid-lab/cubrid-go/blob/main/rows.go): Rows — lazy server-side cursor
+- [Source — dialector/cubrid.go](https://github.com/cubrid-lab/cubrid-go/blob/main/dialector/cubrid.go): GORM Dialector and Migrator
 
 ## Ecosystem
 
-- [pycubrid](https://github.com/cubrid-labs/pycubrid): Pure Python DB-API 2.0 driver (original implementation)
-- [cubrid-cookbook](https://github.com/cubrid-labs/cubrid-cookbook): Production-ready examples across Python, Node.js, and Go
+- [pycubrid](https://github.com/cubrid-lab/pycubrid): Pure Python DB-API 2.0 driver (original implementation)
+- [cubrid-cookbook-python](https://github.com/cubrid-lab/cubrid-cookbook-python): Production-ready Python examples for CUBRID
 - [CUBRID](https://www.cubrid.org/): The CUBRID database

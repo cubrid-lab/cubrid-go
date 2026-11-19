@@ -5,7 +5,7 @@
 **Project**: cubrid-go
 **Current Version**: 0.1.0
 **Status**: Working (beta)
-**Repository**: [github.com/cubrid-labs/cubrid-go](https://github.com/cubrid-labs/cubrid-go)
+**Repository**: [github.com/cubrid-lab/cubrid-go](https://github.com/cubrid-lab/cubrid-go)
 **License**: MIT
 
 ### 1.1 Problem Statement
@@ -225,11 +225,11 @@ it easier to test together.
 
 ## 9. Ecosystem Integration
 
-cubrid-go is the Go arm of the cubrid-labs ecosystem:
+cubrid-go is the Go arm of the CUBRID Lab ecosystem:
 
 ```mermaid
 flowchart TD
-    E[cubrid-labs ecosystem] --> P[Python]
+    E[CUBRID Lab ecosystem] --> P[Python]
     P --> P1[pycubrid DB-API 2.0 driver]
     P --> P2[sqlalchemy-cubrid SQLAlchemy 2.0 dialect]
     E --> T[TypeScript]
@@ -257,7 +257,7 @@ working code within 30 seconds of reading the documentation.
 ### Hello World — database/sql
 
 ```bash
-go get github.com/cubrid-labs/cubrid-go
+go get github.com/cubrid-lab/cubrid-go
 ```
 
 ```go
@@ -266,7 +266,7 @@ package main
 import (
     "database/sql"
     "fmt"
-    _ "github.com/cubrid-labs/cubrid-go"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 
 func main() {
@@ -299,7 +299,7 @@ package main
 import (
     "fmt"
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 
 type Athlete struct {
@@ -336,18 +336,7 @@ AI agents can discover, learn, and recommend cubrid-go accurately.
 
 ### Cookbook Integration
 
-The [cubrid-cookbook](https://github.com/cubrid-labs/cubrid-cookbook) repository provides
-production-ready, runnable examples for cubrid-go:
-
-| Example | Description |
-|---|---|
-| `go/cubrid-go/01_connect.go` | Basic connection and query with `database/sql` |
-| `go/cubrid-go/02_crud.go` | Create, read, update, delete operations |
-| `go/cubrid-go/03_transactions.go` | Transaction management |
-| `go/gorm/01_connect.go` | GORM connection and AutoMigrate |
-| `go/gorm/02_crud.go` | GORM CRUD operations |
-| `go/gorm/03_relationships.go` | GORM associations and relationships |
-| `go/gorm/04_advanced.go` | GORM advanced queries and batch operations |
+There is no Go cookbook repository yet (the former `cubrid-cookbook` links are gone; [cubrid-cookbook-python](https://github.com/cubrid-lab/cubrid-cookbook-python) covers Python only). Runnable Go examples live in this repository's [README](README.md) and [docs/GORM.md](docs/GORM.md) until a Go cookbook exists.
 
 ### Inspiration from Successful Projects
 

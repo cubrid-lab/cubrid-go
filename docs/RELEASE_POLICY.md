@@ -84,7 +84,7 @@ Design PRs may be developed as drafts in parallel, but **must not be treated as 
 
 ## Go `database/sql` driver policy
 
-- Current published version `v0.2.1`, `go.mod` declares `go 1.21`, and **module path `github.com/cubrid-labs/cubrid-go`** while the repository is under `github.com/cubrid-lab/cubrid-go`. Confirm actual module fetching/proxy behavior and imported consumer packages before changing the path. A URL move is not automatically a safe module-path change.
+- Current published version `v0.2.1`, `go.mod` declares `go 1.21`. The **module path is `github.com/cubrid-lab/cubrid-go`** on `main`, matching the repository; this path ships with the next 0.x minor release. `v0.2.1` and earlier were published as `github.com/cubrid-labs/cubrid-go` and remain fetchable under that old path. Release preflight for the first release under the new path must confirm that `go get github.com/cubrid-lab/cubrid-go@<tag>` resolves through the module proxy and that an external consumer builds with the new import path.
 - Treat `database/sql/driver` compatibility as the public behavioral contract: Context cancellation, `driver.ErrBadConn` retry-before-send, transaction and connection ownership, statement/rows handles, `sql.Result` and typed scans.
 - Go `*sql.DB` owns pool management; `cubrid-go` owns physical CAS sessions. A fix that replays an uncertain DML statement after a timeout is **not** backward-compatible correctness.
 - Use Go's **Semantic Import Versioning**. For v0/v1 the existing module import path has no `/v1`; for a future v2 release, the module path/imports need `/v2` and a worked migration guide. See https://go.dev/ref/mod#major-version-suffixes.
