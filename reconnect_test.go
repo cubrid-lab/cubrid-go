@@ -2,11 +2,13 @@ package cubrid
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -399,6 +401,9 @@ func TestCancelBeforeProbeDeadlineReturnsPromptly(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client, server := net.Pipe() // the CAS never reads the probe
 			defer func() { _ = server.Close() }()
+			// If the fix regresses, the request goroutine stays blocked in
+			// the probe write; closing the client end releases it.
+			t.Cleanup(func() { _ = client.Close() })
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -429,9 +434,10 @@ func TestCancelBeforeProbeDeadlineReturnsPromptly(t *testing.T) {
 }
 
 // TestCancelDuringReconnectDial verifies that canceling a request while the
-// driver is dialing the broker after a failed CHECK_CAS, when the connection
-// has no socket, neither crashes the cancel watcher nor races with the
-// reconnect that installs the new socket (#39).
+// driver reconnects to a broker that never answers, after a failed CHECK_CAS,
+// returns context.Canceled promptly even with timeout=0, and that the cancel
+// watcher neither crashes on a connection that has no socket yet nor races
+// with the reconnect that installs the new socket (#39).
 func TestCancelDuringReconnectDial(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -457,7 +463,7 @@ func TestCancelDuringReconnectDial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &conn{socket: client, host: "127.0.0.1", port: l.Addr().(*net.TCPAddr).Port,
-		timeout: 300 * time.Millisecond, autoCommit: true, protoVer: ProtoVersion}
+		autoCommit: true, protoVer: ProtoVersion} // timeout=0: no handshake bound
 
 	done := make(chan error, 1)
 	go func() {
@@ -476,7 +482,223 @@ func TestCancelDuringReconnectDial(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got %v", err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("canceled request did not return")
+	case <-time.After(time.Second):
+		t.Fatal("canceled request waited for the broker handshake")
+	}
+}
+
+// openDatabaseReply is a CAS reply to OpenDatabase for session id session.
+func openDatabaseReply(session int32) []byte {
+	w := newPacketWriter()
+	w.writeInt(0)
+	broker := make([]byte, SizeBrokerInfo)
+	broker[4] = ProtoVersion
+	w.writeRawBytes(broker)
+	w.writeInt(session)
+	return outTranPacket(w.toBytes())
+}
+
+// TestCanceledReconnectHandshakeRetiresConn verifies that a request canceled
+// while a reconnect waits for the OpenDatabase reply leaves the connection
+// unusable. The reply may still arrive on that socket; if the connection were
+// reused, the next request would read it as the answer to its own request.
+// The next request must return driver.ErrBadConn without sending anything.
+func TestCanceledReconnectHandshakeRetiresConn(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	opened := make(chan struct{})
+	release := make(chan struct{})
+	extra := make(chan bool, 1)
+	go func() {
+		nc, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = nc.Close() }()
+		if _, err := io.ReadFull(nc, make([]byte, 10)); err != nil { // ClientInfoExchange
+			return
+		}
+		if _, err := nc.Write([]byte{0, 0, 0, 0}); err != nil { // CAS on this socket
+			return
+		}
+		if _, err := io.ReadFull(nc, make([]byte, len(WriteOpenDatabase("", "", "")))); err != nil {
+			return
+		}
+		close(opened)
+		<-release
+		_, _ = nc.Write(openDatabaseReply(2)) // the late reply to the canceled handshake
+		_ = nc.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_, err = readRequestFunc(nc)
+		extra <- err == nil
+	}()
+
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	go func() {
+		if _, err := readRequestFunc(server); err == nil {
+			_ = server.Close() // fail the probe so the driver reconnects
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &conn{socket: client, host: "127.0.0.1", port: l.Addr().(*net.TCPAddr).Port,
+		autoCommit: true, protoVer: ProtoVersion}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil)
+		done <- err
+	}()
+	select {
+	case <-opened:
+	case <-time.After(2 * time.Second):
+		t.Fatal("driver did not reconnect after a failed CHECK_CAS")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled request waited for the OpenDatabase reply")
+	}
+	close(release)
+	if !c.closed {
+		t.Fatalf("connection must be unusable after an interrupted handshake")
+	}
+
+	next := make(chan error, 1)
+	go func() {
+		_, err := c.ExecContext(context.Background(), "UPDATE t SET v = 2", nil)
+		next <- err
+	}()
+	select {
+	case err := <-next:
+		if !errors.Is(err, driver.ErrBadConn) {
+			t.Fatalf("next request: got %v, want driver.ErrBadConn", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("next request on the interrupted connection did not return")
+	}
+	if <-extra {
+		t.Fatalf("a request was sent on the interrupted connection")
+	}
+}
+
+// TestSetSocketExpiresWhenAlreadyCanceled verifies that a socket installed
+// after the request was canceled starts expired: the cancel watcher may have
+// run while the connection had no socket, so it could not expire this one.
+func TestSetSocketExpiresWhenAlreadyCanceled(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	c := &conn{}
+	c.canceled.Store(true)
+	c.setSocket(client)
+	_, err := client.Write([]byte{0})
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("write on a socket installed after cancellation: got %v, want a timeout", err)
+	}
+}
+
+// lateCancelConn delays the cancel watcher's expiry (the only non-zero
+// deadline in these tests) until the request path clears the deadline, or
+// 200ms have passed. This makes the watcher fire as late as possible: after
+// the request finished its I/O, and after endRequest if that runs first.
+type lateCancelConn struct {
+	net.Conn
+	once    sync.Once
+	cleared chan struct{}
+}
+
+func (l *lateCancelConn) SetDeadline(t time.Time) error {
+	if t.IsZero() {
+		err := l.Conn.SetDeadline(t)
+		l.once.Do(func() { close(l.cleared) })
+		return err
+	}
+	select {
+	case <-l.cleared:
+	case <-time.After(200 * time.Millisecond):
+	}
+	return l.Conn.SetDeadline(t)
+}
+
+// TestLateCancelDoesNotLeakIntoNextRequest verifies that a cancellation
+// arriving after a request has finished its I/O does not affect the next
+// request on the same connection. The request returns context.Canceled, but
+// the connection stays usable, and a second request with a fresh context must
+// succeed: the cancellation flag must be cleared and the watcher's expired
+// deadline must not survive into the next request. The subtests cover a next
+// request that probes the CAS first (reply OUT_TRAN) and one that writes at
+// once (reply IN_TRAN).
+func TestLateCancelDoesNotLeakIntoNextRequest(t *testing.T) {
+	for name, status := range map[string]byte{"next request probes": 0, "next request in transaction": 1} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer func() { _ = server.Close() }()
+			t.Cleanup(func() { _ = client.Close() })
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			withStatus := func(p []byte) []byte {
+				p[SizeDataLength] = status
+				return p
+			}
+			go func() {
+				first := true
+				for {
+					fc, err := readRequestFunc(server)
+					if err != nil {
+						return
+					}
+					reply := withStatus(simpleResponsePacket(0))
+					switch fc {
+					case FuncCheckCas:
+						reply = withStatus(emptyCheckCasResponse())
+					case FuncPrepareAndExecute:
+						reply = withStatus(prepareAndExecuteResponsePacket(StmtUpdate, 1, 1, 0))
+						if first {
+							first = false
+							cancel() // the reply is already on its way
+						}
+					}
+					if _, err := server.Write(reply); err != nil {
+						return
+					}
+				}
+			}()
+
+			c := &conn{socket: &lateCancelConn{Conn: client, cleared: make(chan struct{})},
+				autoCommit: true, protoVer: ProtoVersion}
+			c.casInfo[0] = 1 // the first request does not probe
+			if _, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil); !errors.Is(err, context.Canceled) {
+				t.Fatalf("first request: got %v, want context.Canceled", err)
+			}
+			if c.closed {
+				t.Fatalf("a cancellation after the reply must not retire the connection")
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.ExecContext(context.Background(), "UPDATE t SET v = 2", nil)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("second request on the same connection: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("second request did not return")
+			}
+		})
 	}
 }

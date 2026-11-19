@@ -51,7 +51,8 @@ type conn struct {
 	generation uint64
 	// sockMu lets the cancel watcher read socket while the request goroutine,
 	// which holds mu for the whole request, replaces it during a reconnect.
-	// socket is written only with both mu and sockMu held (see setSocket).
+	// socket is written only with both mu and sockMu held (see setSocket), or
+	// before the conn is published (Driver.Open).
 	sockMu sync.Mutex
 	// canceled records that the running request's context was canceled. The
 	// watcher sets it before expiring the socket deadline, and every deadline
@@ -74,15 +75,26 @@ func (c *conn) connect() error {
 	// Invalidate the handles of the previous session before any new socket
 	// can be used, even if this handshake fails part way.
 	c.generation++
+	// A reconnect runs inside a request: dial with the request's context, so
+	// canceling the request or reaching its deadline aborts the dial. Driver.Open
+	// has no request context.
+	ctx := c.reqCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dialer := net.Dialer{Timeout: c.timeout}
 	brokerAddr := fmt.Sprintf("%s:%d", c.host, c.port)
-	brokerConn, err := net.DialTimeout("tcp", brokerAddr, c.timeout)
+	brokerConn, err := dialer.DialContext(ctx, "tcp", brokerAddr)
 	if err != nil {
 		return &OperationalError{CubridError{Code: -1,
 			Message: fmt.Sprintf("dial broker %s: %v", brokerAddr, err)}}
 	}
+	// Install the broker socket at once, so the cancel watcher can interrupt
+	// the broker handshake below, which otherwise has no bound with timeout=0.
+	c.setSocket(brokerConn)
 
 	if c.timeout > 0 {
-		_ = brokerConn.SetDeadline(time.Now().Add(c.timeout))
+		_ = c.setSocketDeadline(time.Now().Add(c.timeout))
 	}
 
 	// Step 1: send ClientInfoExchange (10 bytes, no framing header).
@@ -109,16 +121,14 @@ func (c *conn) connect() error {
 		_ = brokerConn.Close()
 		casAddr := fmt.Sprintf("%s:%d", c.host, newPort)
 		var casConn net.Conn
-		casConn, err = net.DialTimeout("tcp", casAddr, c.timeout)
+		casConn, err = dialer.DialContext(ctx, "tcp", casAddr)
 		c.setSocket(casConn)
 		if err != nil {
 			return &OperationalError{CubridError{Code: -1,
 				Message: fmt.Sprintf("dial CAS %s: %v", casAddr, err)}}
 		}
-	} else {
-		// Port 0 means the CAS is on the same connection.
-		c.setSocket(brokerConn)
 	}
+	// Port 0 means the CAS is on the same connection: keep the broker socket.
 
 	if c.timeout > 0 {
 		_ = c.setSocketDeadline(time.Now().Add(c.timeout))
@@ -305,6 +315,11 @@ func (c *conn) checkReconnect() error {
 	_ = c.socket.Close()
 	c.setSocket(nil)
 	if err := c.connect(); err != nil {
+		// A handshake that failed part way can leave a reply in flight on
+		// the new socket (for example the OpenDatabase reply after a
+		// cancellation). The next request would read it as its own answer,
+		// so this connection must never be used again.
+		c.retireTransport()
 		return err
 	}
 	// connect() clears the socket deadline; re-apply the request's.

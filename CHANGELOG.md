@@ -38,14 +38,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline replaced the cancellation, so the request returned only after the
   `timeout` DSN option (30s by default) or never with `timeout=0`, if the CAS
   stopped answering. A cancellation is now sticky for the rest of the request:
-  every socket deadline the request sets afterwards, including on a socket
-  opened by a reconnect, keeps the socket expired, and the request returns
-  `context.Canceled` promptly. The cancel watcher also read the connection's
-  socket while a reconnect replaced it; canceling while the driver was dialing
-  the broker dereferenced a nil socket and panicked. The watcher now reads the
-  socket under a lock and skips a missing one, and it is stopped and waited
-  for before the request ends, so a late cancellation cannot expire the socket
-  of the next request on the connection.
+  every socket deadline the request sets afterwards keeps the socket expired,
+  and the request returns `context.Canceled` promptly. The cancel watcher also
+  read the connection's socket while a reconnect replaced it; canceling while
+  the driver was dialing the broker dereferenced a nil socket and panicked.
+  The watcher now reads the socket under a lock and skips a missing one, and
+  it is stopped and waited for before the request ends, so a late
+  cancellation cannot expire the socket of the next request on the
+  connection.
+- **Canceling a request during a reconnect (#39):** The reconnect after a
+  failed `CHECK_CAS` now dials the broker and the CAS with the request's
+  context and lets the cancel watcher interrupt the broker and OpenDatabase
+  handshake, so canceling the request (or reaching its deadline) ends the
+  reconnect promptly, also with `timeout=0`. A reconnect that fails for any
+  reason now retires the connection: a handshake interrupted part way could
+  leave the OpenDatabase reply unread on the new socket, and the next request
+  on that connection read it as the answer to its own request. The next
+  request now returns `driver.ErrBadConn`, so `database/sql` opens a new
+  connection.
 - **Prevent duplicated writes after a lost CAS response (#41):** A request
   accepted by the socket can already have executed at the server even if
   CUBRID drops the reply. `roundTrip` now returns a non-retriable
