@@ -618,6 +618,26 @@ func TestSetSocketExpiresWhenAlreadyCanceled(t *testing.T) {
 	}
 }
 
+// TestCancelWatcherSkipsSocketClearedByReconnect pins the nil check in the
+// cancel watcher deterministically: a reconnect cleared the socket before the
+// cancel arrives, so the watcher must skip it instead of dereferencing nil (#39).
+func TestCancelWatcherSkipsSocketClearedByReconnect(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	c := &conn{}
+	c.setSocket(client)
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := c.watchContextCancel(ctx)
+	c.setSocket(nil)
+	cancel()
+	stop() // waits for the watcher goroutine; a nil dereference would panic it
+	if c.canceled.Load() {
+		t.Fatal("stop did not clear the cancellation flag")
+	}
+}
+
 // lateCancelConn delays the cancel watcher's expiry (the only non-zero
 // deadline in these tests) until the request path clears the deadline, or
 // 200ms have passed. This makes the watcher fire as late as possible: after
