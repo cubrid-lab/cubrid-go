@@ -26,9 +26,13 @@ type fakeCAS struct {
 	mu   sync.Mutex
 	open []net.Conn
 	log  []string
-	// rowsTotal is the total tuple count a PREPARE_AND_EXECUTE reply reports
-	// alongside its single inline row.
+	// rowsTotal is the total tuple count a SELECT reply (PREPARE_AND_EXECUTE,
+	// or EXECUTE of a prepared SELECT) reports alongside its single inline row.
 	rowsTotal int32
+	// dropAfterInsert makes a session close its socket right after it
+	// answers an INSERT, as a CAS restart between two requests does. It
+	// applies to every session the fake serves, not only the first.
+	dropAfterInsert bool
 }
 
 func newFakeCAS(t *testing.T) *fakeCAS {
@@ -140,34 +144,34 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 			query := string(body[4 : 4+n-1])
 			handles = append(handles, query)
 			f.record(fmt.Sprintf("%s PREPARE %s", name, query))
-			w := newPacketWriter()
-			w.writeInt(int32(len(handles))) // query handle
-			w.writeInt(0)                   // result cache lifetime
-			w.writeByte(StmtUpdate)
-			w.writeInt(0) // bind count
-			w.writeByte(0)
-			w.writeInt(0) // column count
-			reply = outTranPacket(w.toBytes())
+			if strings.HasPrefix(query, "SELECT") {
+				reply = outTranPacket(selectPrepareBody(int32(len(handles))))
+			} else {
+				reply = outTranPacket(noColumnPrepareBody(int32(len(handles)), StmtUpdate))
+			}
 		case FuncExecute:
-			f.record(fmt.Sprintf("%s EXECUTE %s", name, sqlOf(body)))
-			w := newPacketWriter()
-			w.writeInt(1) // total tuple count
-			w.writeByte(0)
-			w.writeInt(1) // result-info count
-			w.writeByte(StmtUpdate)
-			w.writeInt(1) // affected rows
-			w.writeRawBytes(make([]byte, SizeOID))
-			w.writeInt(0)
-			w.writeInt(0)
-			w.writeByte(0) // includes_column_info
-			w.writeInt(0)  // shard_id
-			reply = outTranPacket(w.toBytes())
+			query := sqlOf(body)
+			f.record(fmt.Sprintf("%s EXECUTE %s", name, query))
+			if strings.HasPrefix(query, "SELECT") {
+				reply = outTranPacket(selectExecuteBody(f.rowsTotal))
+			} else {
+				reply = outTranPacket(oneRowAffectedBody(StmtUpdate))
+			}
 		case FuncPrepareAndExecute:
 			n := int(binary.BigEndian.Uint32(body[8:12])) // after addInt(arg count)
 			query := string(body[12 : 12+n-1])
 			handles = append(handles, query)
 			f.record(fmt.Sprintf("%s PREPARE_AND_EXECUTE %s", name, query))
-			reply = outTranPacket(oneRowSelectBody(int32(len(handles)), f.rowsTotal))
+			if strings.HasPrefix(query, "INSERT") {
+				reply = outTranPacket(append(noColumnPrepareBody(int32(len(handles)), StmtInsert),
+					oneRowAffectedBody(StmtInsert)...))
+				if f.dropAfterInsert {
+					_, _ = nc.Write(reply)
+					return
+				}
+			} else {
+				reply = outTranPacket(oneRowSelectBody(int32(len(handles)), f.rowsTotal))
+			}
 		case FuncFetch:
 			f.record(fmt.Sprintf("%s FETCH %s", name, sqlOf(body)))
 			return
@@ -214,6 +218,42 @@ func outTranPacket(body []byte) []byte {
 // oneRowSelectBody is a PREPARE_AND_EXECUTE reply body for a one-INTEGER-column
 // SELECT that reports total rows and carries only the first one inline.
 func oneRowSelectBody(handle, total int32) []byte {
+	return append(selectPrepareBody(handle), selectExecuteBody(total)...)
+}
+
+// noColumnPrepareBody is the PREPARE part of a reply for a statement of type
+// stmtType that has no result columns.
+func noColumnPrepareBody(handle int32, stmtType byte) []byte {
+	w := newPacketWriter()
+	w.writeInt(handle)
+	w.writeInt(0) // result cache lifetime
+	w.writeByte(stmtType)
+	w.writeInt(0) // bind count
+	w.writeByte(0)
+	w.writeInt(0) // column count
+	return w.toBytes()
+}
+
+// oneRowAffectedBody is the EXECUTE part of a reply for a statement of type
+// stmtType that affected one row.
+func oneRowAffectedBody(stmtType byte) []byte {
+	w := newPacketWriter()
+	w.writeInt(1) // total tuple count
+	w.writeByte(0)
+	w.writeInt(1) // result-info count
+	w.writeByte(stmtType)
+	w.writeInt(1) // affected rows
+	w.writeRawBytes(make([]byte, SizeOID))
+	w.writeInt(0)
+	w.writeInt(0)
+	w.writeByte(0) // includes_column_info
+	w.writeInt(0)  // shard_id
+	return w.toBytes()
+}
+
+// selectPrepareBody is the PREPARE part of a reply for a one-INTEGER-column
+// SELECT.
+func selectPrepareBody(handle int32) []byte {
 	w := newPacketWriter()
 	w.writeInt(handle)
 	w.writeInt(0) // result cache lifetime
@@ -232,6 +272,13 @@ func oneRowSelectBody(handle, total int32) []byte {
 	for i := 0; i < 7; i++ {
 		w.writeByte(0)
 	}
+	return w.toBytes()
+}
+
+// selectExecuteBody is the EXECUTE part of a reply for the SELECT of
+// selectPrepareBody: it reports total rows and carries only the first inline.
+func selectExecuteBody(total int32) []byte {
+	w := newPacketWriter()
 	w.writeInt(total) // total tuple count
 	w.writeByte(0)
 	w.writeInt(0) // result-info count
@@ -396,5 +443,150 @@ func TestDBStmtReprepareAfterBrokerRestart(t *testing.T) {
 	want := []string{"s1 EXECUTE UPDATE t SET v = 'OLD'", "s3 EXECUTE UPDATE t SET v = 'OLD'"}
 	if strings.Join(executed, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("executed %q, want %q", executed, want)
+	}
+}
+
+// TestStalePreparedQueryIsNotSentOnNewSession covers the no-argument
+// stmt.Query path: a prepared statement's handle names a statement on the
+// session that prepared it, and after a reconnect the new session may use the
+// same number for another statement. Query must return driver.ErrBadConn, so
+// database/sql prepares the statement again, and must not send EXECUTE on the
+// new session (#43).
+func TestStalePreparedQueryIsNotSentOnNewSession(t *testing.T) {
+	f := newFakeCAS(t)
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+
+	prepared, err := c.Prepare("UPDATE t SET v = 'OLD'")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	old := prepared.(*stmt)
+
+	f.restart()
+	del, err := c.Prepare("DELETE FROM t")
+	if err != nil {
+		t.Fatalf("Prepare after broker restart: %v", err)
+	}
+
+	if _, err := old.Query(nil); !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("Query of a statement from the earlier session: got %v, want driver.ErrBadConn", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := del.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("conn Close: %v", err)
+	}
+	f.waitFor("s2 CON_CLOSE")
+
+	got := sessionLog(f.entries(), "s2")
+	want := []string{"s2 PREPARE DELETE FROM t", "s2 CLOSE_REQ DELETE FROM t", "s2 CON_CLOSE"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("new session received %q, want %q", got, want)
+	}
+}
+
+// TestStalePreparedRowsAreNotFetchedOnNewSession covers rows returned by a
+// no-argument prepared stmt.Query. Their server cursor exists only on the
+// session that executed the statement. After a reconnect, Next must not FETCH
+// that handle on the new session, where the same number names another
+// statement (#43). Close sends nothing for these rows whatever the
+// generation, because the handle belongs to the prepared statement
+// (closeHandle is false), so FETCH is the only request here that depends on
+// the generation check; the CLOSE_REQ assertion pins that ownership rule.
+func TestStalePreparedRowsAreNotFetchedOnNewSession(t *testing.T) {
+	f := newFakeCAS(t)
+	f.rowsTotal = 2
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+
+	prepared, err := c.Prepare("SELECT v FROM t")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	r, err := prepared.(*stmt).Query(nil)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	dest := make([]driver.Value, 1)
+	if err := r.Next(dest); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+
+	f.restart()
+	del, err := c.Prepare("DELETE FROM t")
+	if err != nil {
+		t.Fatalf("Prepare after broker restart: %v", err)
+	}
+
+	err = r.Next(dest)
+	var opErr *OperationalError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("Next after reconnect: got %v, want an OperationalError", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("rows Close: %v", err)
+	}
+	if err := del.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("conn Close: %v", err)
+	}
+	f.waitFor("s2 CON_CLOSE")
+
+	got := sessionLog(f.entries(), "s2")
+	want := []string{"s2 PREPARE DELETE FROM t", "s2 CLOSE_REQ DELETE FROM t", "s2 CON_CLOSE"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("new session received %q, want %q", got, want)
+	}
+}
+
+// TestExecDropsInsertHandleWhenLastInsertIDReconnects covers ExecContext when
+// the CAS goes away between the INSERT and the LAST_INSERT_ID() lookup, so
+// fetchLastInsertID reconnects. The INSERT's handle belongs to the earlier
+// session and must be dropped: sending CLOSE_REQ for it on the new session
+// could close a live statement that has the same number there (#43).
+func TestExecDropsInsertHandleWhenLastInsertIDReconnects(t *testing.T) {
+	f := newFakeCAS(t)
+	f.dropAfterInsert = true
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+
+	if _, err := c.ExecContext(context.Background(), "INSERT INTO t (v) VALUES (1)", nil); err != nil {
+		t.Fatalf("ExecContext: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("conn Close: %v", err)
+	}
+	f.waitFor("s2 CON_CLOSE")
+
+	if got := sessionLog(f.entries(), "s1"); len(got) != 1 || got[0] != "s1 PREPARE_AND_EXECUTE INSERT INTO t (v) VALUES (1)" {
+		t.Fatalf("first session received %q, want only the INSERT", got)
+	}
+	// If the INSERT's handle were sent, it would show up as a second
+	// "s2 CLOSE_REQ SELECT LAST_INSERT_ID()" line: both handles are number 1,
+	// and on the new session number 1 is the LAST_INSERT_ID() query.
+	got := sessionLog(f.entries(), "s2")
+	want := []string{
+		"s2 PREPARE_AND_EXECUTE SELECT LAST_INSERT_ID()",
+		"s2 CLOSE_REQ SELECT LAST_INSERT_ID()",
+		"s2 CON_CLOSE",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("new session received %q, want %q", got, want)
 	}
 }
