@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `database/sql` panics on the second registration.
 
 ### Fixed
+- **Fetching and closing rows now hold the connection lock (#20):**
+  `Rows.Next` (when it fetches the next block of rows) and `Rows.Close` (when
+  the rows own their server handle) sent their request, and could reconnect,
+  without the connection's mutex, which every other request path holds. A
+  caller that used the driver's `driver.Conn` directly from two goroutines
+  could therefore interleave two requests on one CAS socket, read another
+  request's reply, or have a reconnect replace the socket under a running
+  request. Applications that go through `database/sql` were not affected,
+  because `database/sql` already serializes every call on one connection.
 - **A canceled request could wait for the `CHECK_CAS` deadline, or crash the
   process (#39):** When a context was canceled just before the
   out-of-transaction `CHECK_CAS` check set its own socket deadline, that

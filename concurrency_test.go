@@ -3,6 +3,7 @@ package cubrid
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"net"
 	"strings"
@@ -107,6 +108,93 @@ func TestTxStmtCloseDoesNotInterleaveWithRowsFetch(t *testing.T) {
 		t.Fatalf("rows Close: %v", err)
 	}
 	f.waitFor("s1 CLOSE_REQ SELECT v FROM t")
+}
+
+// TestRowsFetchHoldsConnMutex covers direct users of the driver interfaces.
+// The conn mutex is what keeps each CAS request and its reply together and
+// what guards the socket and session state that a reconnect replaces, so
+// rows.Next must hold it while it fetches, as every other request path does.
+// Here a Ping on the same driver connection starts while a FETCH reply is
+// outstanding; the CAS must not receive the Ping (or its CHECK_CAS probe)
+// before the FETCH reply has been read.
+func TestRowsFetchHoldsConnMutex(t *testing.T) {
+	f := newFakeCAS(t)
+	f.rowsTotal = 2
+	f.answerFetch = true
+	fetching, interleaved := holdReply(f, FuncFetch)
+
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+	defer func() { _ = c.Close() }()
+
+	r, err := c.QueryContext(context.Background(), "SELECT v FROM t", nil)
+	if err != nil {
+		t.Fatalf("QueryContext: %v", err)
+	}
+	dest := make([]driver.Value, 1)
+	if err := r.Next(dest); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+
+	pinged := make(chan error, 1)
+	go func() {
+		<-fetching
+		pinged <- c.Ping()
+	}()
+	nextErr := r.Next(dest)
+	if <-interleaved {
+		t.Fatalf("the CAS received another request while the FETCH reply was outstanding")
+	}
+	if nextErr != nil {
+		t.Fatalf("second Next (FETCH): %v", nextErr)
+	}
+	if err := <-pinged; err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("rows Close: %v", err)
+	}
+}
+
+// TestRowsCloseHoldsConnMutex is the rows.Close counterpart of
+// TestRowsFetchHoldsConnMutex: rows that own their server handle send
+// CLOSE_REQ on Close, which may reconnect, so Close must hold the conn mutex
+// until the CLOSE_REQ reply has been read.
+func TestRowsCloseHoldsConnMutex(t *testing.T) {
+	f := newFakeCAS(t)
+	f.rowsTotal = 2
+	closing, interleaved := holdReply(f, FuncCloseReqHandle)
+
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+	defer func() { _ = c.Close() }()
+
+	r, err := c.QueryContext(context.Background(), "SELECT v FROM t", nil)
+	if err != nil {
+		t.Fatalf("QueryContext: %v", err)
+	}
+
+	pinged := make(chan error, 1)
+	go func() {
+		<-closing
+		pinged <- c.Ping()
+	}()
+	closeErr := r.Close()
+	if <-interleaved {
+		t.Fatalf("the CAS received another request while the CLOSE_REQ reply was outstanding")
+	}
+	if closeErr != nil {
+		t.Fatalf("rows Close: %v", closeErr)
+	}
+	if err := <-pinged; err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
 }
 
 // TestRowsClosedByCancelWhileNextReconnects covers database/sql closing rows
