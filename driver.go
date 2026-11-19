@@ -47,6 +47,11 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 		autoCommit: cfg.autoCommit,
 	}
 	if err := c.connect(); err != nil {
+		// A handshake that failed after the CAS accepted the connection (for
+		// example, OpenDatabase rejected the credentials) leaves its socket
+		// open. No conn is returned, so close it here; otherwise the CAS
+		// keeps the session until its own timeout.
+		c.retireTransport()
 		return nil, err
 	}
 	return c, nil

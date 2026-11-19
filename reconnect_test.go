@@ -732,3 +732,55 @@ func TestLateCancelDoesNotLeakIntoNextRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenClosesSocketWhenOpenDatabaseFails verifies that Driver.Open closes
+// the CAS socket when the broker accepts the connection but OpenDatabase
+// fails (for example, a wrong password or an unknown database). Open returns
+// no conn to the caller, so nothing else could ever close that socket, and
+// the CAS would keep the session until it times out.
+func TestOpenClosesSocketWhenOpenDatabaseFails(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	closedByClient := make(chan bool, 1)
+	go func() {
+		nc, err := l.Accept()
+		if err != nil {
+			closedByClient <- false
+			return
+		}
+		defer func() { _ = nc.Close() }()
+		if _, err := io.ReadFull(nc, make([]byte, 10)); err != nil { // ClientInfoExchange
+			closedByClient <- false
+			return
+		}
+		_, _ = nc.Write([]byte{0, 0, 0, 0}) // CAS on this socket
+		if _, err := io.ReadFull(nc, make([]byte, len(WriteOpenDatabase("", "", "")))); err != nil {
+			closedByClient <- false
+			return
+		}
+		w := newPacketWriter()
+		w.writeInt(-1)
+		w.writeInt(-165)
+		w.writeRawBytes([]byte("Incorrect or missing password.\x00"))
+		_, _ = nc.Write(outTranPacket(w.toBytes()))
+
+		_ = nc.SetReadDeadline(time.Now().Add(time.Second))
+		_, err = nc.Read(make([]byte, 1))
+		// EOF or a connection reset both mean the client closed the socket;
+		// only a timeout means it is still open.
+		var ne net.Error
+		closedByClient <- err != nil && !(errors.As(err, &ne) && ne.Timeout())
+	}()
+
+	dsn := "cubrid://dba:wrong@127.0.0.1:" + strconv.Itoa(l.Addr().(*net.TCPAddr).Port) + "/testdb?timeout=2s"
+	if _, err := (&Driver{}).Open(dsn); err == nil {
+		t.Fatalf("Open succeeded; want the OpenDatabase error")
+	}
+	if !<-closedByClient {
+		t.Fatalf("Open returned an error but left the CAS socket open")
+	}
+}

@@ -32,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `database/sql` panics on the second registration.
 
 ### Fixed
+- **Fetching and closing rows now hold the connection lock (#20):**
+  `Rows.Next` (when it fetches the next block of rows) and `Rows.Close` (when
+  the rows own their server handle) sent their request, and could reconnect,
+  without the connection's mutex, which every other request path holds. A
+  caller that used the driver's `driver.Conn` directly from two goroutines
+  could therefore interleave two requests on one CAS socket, read another
+  request's reply, or have a reconnect replace the socket under a running
+  request. Applications that go through `database/sql` were not affected,
+  because `database/sql` already serializes every call on one connection.
+- **A failed `Open` left the CAS socket open (#20):** When the broker
+  accepted the connection but the OpenDatabase step failed (for example, a
+  wrong password or an unknown database name), `Driver.Open` returned the
+  error without closing the socket. No connection was returned, so nothing
+  could close it later and the CAS kept the session until its own timeout.
+  `Open` now closes the socket on every handshake failure.
 - **A canceled request could wait for the `CHECK_CAS` deadline, or crash the
   process (#39):** When a context was canceled just before the
   out-of-transaction `CHECK_CAS` check set its own socket deadline, that
@@ -97,6 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[]byte` parameter for binary data.
 
 ### Added
+- [Concurrency and reconnects](docs/CONCURRENCY.md) (#20): what is safe to
+  share between goroutines, how `database/sql` and the driver serialize the
+  requests of one connection, which lock protects each piece of connection
+  state, and how an automatic reconnect interacts with requests in flight.
+  Race-detector tests through `database/sql` cover a statement closed during a
+  fetch, rows closed on cancellation during a reconnect, and concurrent use of
+  one pool across broker restarts. The README and API reference no longer
+  claim that `db.Ping` sends `GET_DB_VERSION` on a pooled connection: the
+  driver does not implement `driver.Pinger` yet (#88).
 - `InterpolateArgsWithMode` / `FormatValueWithMode` and the `StringEscapeMode`
   type for explicit, connection-aware string escaping. `InterpolateArgs` and
   `FormatValue` remain as literal-backslash (CUBRID-default) wrappers for

@@ -33,6 +33,18 @@ type fakeCAS struct {
 	// answers an INSERT, as a CAS restart between two requests does. It
 	// applies to every session the fake serves, not only the first.
 	dropAfterInsert bool
+	// answerFetch makes a session answer FETCH with one more row instead of
+	// closing its socket.
+	answerFetch bool
+	// beforeReply, when set, runs on the session's goroutine after a request
+	// has been read and before its reply is written, so it may read from nc
+	// to observe what the client sends while that reply is outstanding. If it
+	// returns false, the session is closed without replying.
+	beforeReply func(fc byte, nc net.Conn) bool
+	// distinctHandles makes session s number its handles from s*1000+1
+	// instead of 1, so a handle sent to a session that did not issue it is
+	// always logged as an unknown handle.
+	distinctHandles bool
 }
 
 func newFakeCAS(t *testing.T) *fakeCAS {
@@ -121,13 +133,17 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 		return
 	}
 
-	var handles []string // handles[h-1] is the SQL prepared as handle h
+	base := int32(0)
+	if f.distinctHandles {
+		base = int32(session) * 1000
+	}
+	var handles []string // handles[h-base-1] is the SQL prepared as handle h
 	sqlOf := func(body []byte) string {
 		h := int(int32(binary.BigEndian.Uint32(body[4:8]))) // addInt(handle)
-		if h < 1 || h > len(handles) {
+		if i := h - int(base); i < 1 || i > len(handles) {
 			return fmt.Sprintf("unknown handle %d", h)
 		}
-		return handles[h-1]
+		return handles[h-int(base)-1]
 	}
 	name := fmt.Sprintf("s%d", session)
 	for {
@@ -145,9 +161,9 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 			handles = append(handles, query)
 			f.record(fmt.Sprintf("%s PREPARE %s", name, query))
 			if strings.HasPrefix(query, "SELECT") {
-				reply = outTranPacket(selectPrepareBody(int32(len(handles))))
+				reply = outTranPacket(selectPrepareBody(base + int32(len(handles))))
 			} else {
-				reply = outTranPacket(noColumnPrepareBody(int32(len(handles)), StmtUpdate))
+				reply = outTranPacket(noColumnPrepareBody(base+int32(len(handles)), StmtUpdate))
 			}
 		case FuncExecute:
 			query := sqlOf(body)
@@ -163,18 +179,21 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 			handles = append(handles, query)
 			f.record(fmt.Sprintf("%s PREPARE_AND_EXECUTE %s", name, query))
 			if strings.HasPrefix(query, "INSERT") {
-				reply = outTranPacket(append(noColumnPrepareBody(int32(len(handles)), StmtInsert),
+				reply = outTranPacket(append(noColumnPrepareBody(base+int32(len(handles)), StmtInsert),
 					oneRowAffectedBody(StmtInsert)...))
 				if f.dropAfterInsert {
 					_, _ = nc.Write(reply)
 					return
 				}
 			} else {
-				reply = outTranPacket(oneRowSelectBody(int32(len(handles)), f.rowsTotal))
+				reply = outTranPacket(oneRowSelectBody(base+int32(len(handles)), f.rowsTotal))
 			}
 		case FuncFetch:
 			f.record(fmt.Sprintf("%s FETCH %s", name, sqlOf(body)))
-			return
+			if !f.answerFetch {
+				return
+			}
+			reply = outTranPacket(oneRowFetchBody())
 		case FuncCloseReqHandle:
 			f.record(fmt.Sprintf("%s CLOSE_REQ %s", name, sqlOf(body)))
 			reply = simpleResponsePacket(0)
@@ -184,6 +203,9 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 		default:
 			f.record(fmt.Sprintf("%s FC%d", name, fc))
 			reply = simpleResponsePacket(0)
+		}
+		if f.beforeReply != nil && !f.beforeReply(fc, nc) {
+			return
 		}
 		if _, err := nc.Write(reply); err != nil {
 			return
