@@ -1,4 +1,4 @@
-module github.com/cubrid-labs/cubrid-go
+module github.com/cubrid-lab/cubrid-go
 
 go 1.21
 

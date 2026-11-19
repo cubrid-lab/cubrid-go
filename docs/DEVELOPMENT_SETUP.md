@@ -6,7 +6,7 @@
 
 - Go **1.21 or later**, matching `go.mod` and CI's Go 1.21/1.22 lanes; a current developer Go toolchain may be newer, but older-version support requires CI evidence.
 - Optional Docker Compose for a real CUBRID broker. The Go module is built and tested with its documented Go toolchain.
-- **Important:** the GitHub repository is `cubrid-lab/cubrid-go`, but `go.mod` says `module github.com/cubrid-labs/cubrid-go`. That path is part of an external Go consumer contract. **Do not fix it by renaming imports in a setup PR**; verify module proxy behavior, then design a compatible migration in [#57](https://github.com/cubrid-lab/cubrid-go/issues/57).
+- **Module path:** starting with the next 0.x minor release the module path is `github.com/cubrid-lab/cubrid-go`, matching the repository. Releases up to and including `v0.2.1` were published as `github.com/cubrid-labs/cubrid-go`; they stay fetchable under that old path, but new code must import `github.com/cubrid-lab/cubrid-go`. See the upgrade notes in [CHANGELOG.md](../CHANGELOG.md) and [#57](https://github.com/cubrid-lab/cubrid-go/issues/57).
 
 ```sh
 git clone https://github.com/cubrid-lab/cubrid-go.git

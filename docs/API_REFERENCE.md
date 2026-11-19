@@ -28,7 +28,7 @@ Complete reference for the `cubrid-go` pure Go database driver.
 ## Installation
 
 ```bash
-go get github.com/cubrid-labs/cubrid-go
+go get github.com/cubrid-lab/cubrid-go
 ```
 
 **Requirements**: Go 1.21 or later.
@@ -42,7 +42,7 @@ The driver registers itself with `database/sql` automatically via `init()`. Impo
 ```go
 import (
     "database/sql"
-    _ "github.com/cubrid-labs/cubrid-go"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 ```
 

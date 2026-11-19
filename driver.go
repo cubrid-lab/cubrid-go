@@ -10,7 +10,7 @@
 //
 // GORM example:
 //
-//	import "github.com/cubrid-labs/cubrid-go/dialector"
+//	import "github.com/cubrid-lab/cubrid-go/dialector"
 //
 //	db, err := gorm.Open(cubrid.Open("cubrid://dba:@localhost:33000/demodb"), &gorm.Config{})
 package cubrid

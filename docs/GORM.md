@@ -36,7 +36,7 @@ Complete guide for using CUBRID with [GORM](https://gorm.io), Go's most popular 
 ## Installation
 
 ```bash
-go get github.com/cubrid-labs/cubrid-go
+go get github.com/cubrid-lab/cubrid-go
 go get gorm.io/gorm
 ```
 
@@ -52,7 +52,7 @@ import (
     "log"
 
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 
 type Product struct {
@@ -91,7 +91,7 @@ The standard approach — pass a CUBRID DSN to `cubrid.Open()`:
 ```go
 import (
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 
 db, err := gorm.Open(cubrid.Open("cubrid://dba:@localhost:33000/demodb"), &gorm.Config{})
@@ -105,8 +105,8 @@ If you already have a configured `*sql.DB` (e.g., with custom pool settings):
 import (
     "database/sql"
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
-    _ "github.com/cubrid-labs/cubrid-go"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
+    _ "github.com/cubrid-lab/cubrid-go"
 )
 
 sqlDB, _ := sql.Open("cubrid", "cubrid://dba:@localhost:33000/demodb")
@@ -565,7 +565,7 @@ import (
     "time"
 
     "gorm.io/gorm"
-    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 )
 
 // ─── Models ─────────────────────────────────────────

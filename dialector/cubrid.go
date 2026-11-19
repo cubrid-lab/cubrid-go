@@ -4,7 +4,7 @@
 //
 //	import (
 //	    "gorm.io/gorm"
-//	    cubrid "github.com/cubrid-labs/cubrid-go/dialector"
+//	    cubrid "github.com/cubrid-lab/cubrid-go/dialector"
 //	)
 //
 //	db, err := gorm.Open(cubrid.Open("cubrid://dba:@localhost:33000/demodb"), &gorm.Config{})
@@ -23,7 +23,7 @@ import (
 	"gorm.io/gorm/schema"
 
 	// Register the cubrid driver with database/sql.
-	_ "github.com/cubrid-labs/cubrid-go"
+	_ "github.com/cubrid-lab/cubrid-go"
 )
 
 // Dialector is the GORM dialector for CUBRID.
