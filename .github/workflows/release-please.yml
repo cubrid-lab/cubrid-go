@@ -1,0 +1,97 @@
+name: Prepare reviewed Release PR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Go modules are published by the tag, and this workflow never tags.
+      # Until a maintainer tags the version in the manifest, do not propose the
+      # next one (docs/RELEASE_PROCESS.md).
+      - name: Wait for the current version's tag before proposing the next
+        id: current-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er '."."' .release-please-manifest.json)
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$version' in .release-please-manifest.json."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if out=$(gh api "repos/$GH_REPO/git/ref/tags/v$version" 2>&1); then
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+          elif grep -q "HTTP 404" <<<"$out"; then
+            echo "::notice::Tag v$version does not exist yet; tag the merged Release PR before the next one is proposed."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$out"
+            echo "::error::Could not check whether tag v$version exists."
+            exit 1
+          fi
+
+      # The version is tagged, so its merged Release PR is no longer pending.
+      # Release Please would otherwise refuse to open the next Release PR.
+      - name: Mark the tagged Release PR as tagged
+        if: steps.current-version.outputs.tagged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.current-version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="chore(main): release $VERSION"
+          pending=$(gh pr list --repo "$GH_REPO" --base main --state merged \
+            --label "autorelease: pending" --limit 100 --json number,title)
+          prs=$(jq -r --arg title "$title" '.[] | select(.title == $title) | .number' <<<"$pending")
+          others=$(jq -r --arg title "$title" '[.[] | select(.title != $title) | "#\(.number)"] | join(", ")' <<<"$pending")
+          if [[ -n $others ]]; then
+            echo "::warning::Merged PRs still labelled 'autorelease: pending' do not match '$title': $others. Check and relabel them by hand."
+          fi
+          for pr in $prs; do
+            if ! out=$(gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/autorelease%3A%20pending" 2>&1); then
+              if ! grep -q "HTTP 404" <<<"$out"; then
+                echo "$out"
+                echo "::error::Could not remove 'autorelease: pending' from #$pr."
+                exit 1
+              fi
+            fi
+            if gh api "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=autorelease: tagged" >/dev/null; then
+              echo "Release PR #$pr for v$VERSION marked as tagged" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Removed 'autorelease: pending' from #$pr but could not add 'autorelease: tagged'."
+            fi
+          done
+
+      # PR-only: merging the Release PR does not create a tag or a GitHub Release.
+      - name: Propose version and changelog in a Release PR
+        if: steps.current-version.outputs.tagged == 'true'
+        uses: googleapis/release-please-action@v5
+        with:
+          # Supply a restricted PAT for automatic PR CI (or mint an App token per run).
+          # With GITHUB_TOKEN, manually rerun CI on generated Release PRs.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

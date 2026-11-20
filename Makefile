@@ -1,4 +1,4 @@
-.PHONY: test lint fmt vet integration clean check security check-all changelog clean-all doctor
+.PHONY: test lint fmt vet integration clean check security check-all clean-all doctor
 
 # Run unit tests (short mode, no integration)
 test:
@@ -39,10 +39,6 @@ security:
 # Full check (all quality gates)
 check-all: fmt vet lint security test
 
-# Generate changelog (requires git-cliff)
-changelog:
-	@which git-cliff > /dev/null 2>&1 && git-cliff -o CHANGELOG.md || echo "git-cliff not installed, skipping"
-
 # Clean all artifacts
 clean-all: clean
 	rm -rf dist/ bin/
@@ -55,4 +51,3 @@ doctor:
 	@echo "=== Tools ==="
 	@which golangci-lint > /dev/null 2>&1 && echo "✓ golangci-lint" || echo "✗ golangci-lint (optional)"
 	@which govulncheck > /dev/null 2>&1 && echo "✓ govulncheck" || echo "✗ govulncheck (optional: go install golang.org/x/vuln/cmd/govulncheck@latest)"
-	@which git-cliff > /dev/null 2>&1 && echo "✓ git-cliff" || echo "✗ git-cliff (optional)"

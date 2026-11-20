@@ -36,7 +36,7 @@ A release's **version, supported runtime/database ranges, published package expo
 ## Workflow and release notes
 
 1. Merge scoped code/test/documentation PRs with required final-head CI. Architectural notes and mocked tests are not substitutes for live CUBRID tests.
-2. Open a **reviewed release candidate PR** containing the proposed version change, manifest/lockfile or crate metadata, release notes, API/compatibility notes, and any migration instructions. No automatic publish directly from arbitrary feature PR merges.
+2. Open a **reviewed release candidate PR** (Release Please proposes it; see [RELEASE_PROCESS.md](RELEASE_PROCESS.md)) containing the proposed version change, manifest/lockfile or crate metadata, release notes, API/compatibility notes, and any migration instructions. No automatic publish directly from arbitrary feature PR merges.
 3. Run an explicit **release preflight** on the exact candidate commit: quality/lint/tests, real supported database matrix where the release makes DB behavior claims, package/build artifact verification, dependency lower-bound and consumer smoke tests, and security/secret checks. Fail closed for missing, failed, cancelled or skipped required release checks.
 4. A maintainer approves the candidate and release notes. Release/publishing permission changes need independent security review. Only then create immutable tags and publish to the language's registry. Do not overwrite tags or re-publish an existing version.
 5. Verify the public registry artifact and GitHub Release match the reviewed commit and tag. Record evidence and a release recovery/retry procedure; do not mask a partial publish as a success.

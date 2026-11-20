@@ -53,3 +53,11 @@
 - name: "stale"
   color: "ededed"
   description: "Inactive issue or pull request"
+
+- name: "autorelease: pending"
+  color: "ededed"
+  description: "Release Please PR merged; the version is not tagged yet"
+
+- name: "autorelease: tagged"
+  color: "ededed"
+  description: "Release Please PR whose version has been tagged"
