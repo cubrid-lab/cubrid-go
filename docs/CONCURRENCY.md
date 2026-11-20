@@ -75,11 +75,13 @@ the reply. Every path that can send a request or reconnect holds it:
 | Entry point | Can reconnect | Holds `conn.mu` | Cancel watcher |
 |:--|:--|:--|:--|
 | `conn.QueryContext`, `conn.ExecContext` (including the escaping-mode probe, `LAST_INSERT_ID()` lookup and handle cleanup inside them) | yes | yes | yes |
-| `conn.Prepare`, `conn.Ping`, `conn.ServerVersion` | yes | yes | no |
+| `conn.Ping` | yes | yes | yes |
+| `conn.Prepare`, `conn.ServerVersion` | yes | yes | no |
 | `stmt.Exec`, `stmt.Query`, `stmt.Close` | yes | yes | no |
 | `rows.Next` (when it fetches more rows), `rows.Close` (when the rows own their handle), and either of them when it sends a closed statement's deferred `CLOSE_REQ` | yes | yes | no |
 | `tx.Commit`, `tx.Rollback` | yes | yes | no |
 | `conn.Begin`, `conn.BeginTx` | no (nothing is sent) | yes | no |
+| `conn.IsValid` (`driver.Validator`; reads `closed` so `database/sql` drops a retired connection instead of pooling it) | no (nothing is sent) | yes | no |
 | `conn.Close` | no | yes | no |
 
 ### Connection state and what protects it
@@ -92,7 +94,7 @@ the reply. Every path that can send a request or reconnect holds it:
 | `closed` | `Close`, `retireTransport`, an interrupted probe | `conn.mu`, or before `Driver.Open` returns the connection (`retireTransport` on a failed handshake) |
 | `autoCommit` | `Begin`, `BeginTx`, `Commit`, `Rollback` | `conn.mu` |
 | `protoVer`, `stringEscapeMode` | `connect`, first parameterized execution | `conn.mu` |
-| `reqCtx`, `reqDeadline` (running request) | start and end of `QueryContext`, `ExecContext`, `BeginTx` | `conn.mu` |
+| `reqCtx`, `reqDeadline` (running request) | start and end of `QueryContext`, `ExecContext`, `BeginTx`, `Ping` | `conn.mu` |
 | `canceled` (sticky cancellation of the running request) | cancel watcher; cleared when the watcher stops | atomic |
 | host, port, credentials, `timeout` | `Driver.Open` | not changed after `Open` |
 | `stmt.closed`, `stmt.queryHandle`, `stmt.openRows` (rows that may still fetch with the statement's handle) | `stmt.Close`, `stmt.Query`, and `rows.Next`/`rows.Close` when they stop using the handle | `conn.mu` |
@@ -101,7 +103,7 @@ the reply. Every path that can send a request or reconnect holds it:
 
 ### The cancel watcher
 
-`QueryContext` and `ExecContext` start a goroutine that waits for the
+`QueryContext`, `ExecContext` and `Ping` start a goroutine that waits for the
 request's context. When the context is done it sets `canceled`, reads the
 current socket under `sockMu` and expires its deadline, which makes the
 blocked `Read` or `Write` return. A reconnect may replace the socket, or leave
@@ -153,19 +155,14 @@ own rows.
 These are not data races, but they affect what a concurrent application can
 expect:
 
-- Only `QueryContext` and `ExecContext` watch their context. Preparing a
-  statement, running a prepared statement, fetching more rows, `Commit`,
-  `Rollback` and `Ping` have no deadline of their own: the `timeout` DSN
+- Only `QueryContext`, `ExecContext` and `Ping` watch their context.
+  Preparing a statement, running a prepared statement, fetching more rows,
+  `Commit` and `Rollback` have no deadline of their own: the `timeout` DSN
   option bounds only a reconnect handshake and the `CHECK_CAS` probe before
   them. A CAS that stops answering mid-request can block them, holding their
   connection, and canceling the context passed to `database/sql` does not
   interrupt them. Tracked by
   [#87](https://github.com/cubrid-lab/cubrid-go/issues/87).
-- `conn.Ping` does not take a context, so the driver does not implement
-  `driver.Pinger`. `db.Ping` and `db.PingContext` therefore send nothing on
-  an existing pooled connection; they reach the server only when they have to
-  open a new connection, whose handshake fails if the broker is down. Tracked
-  by [#88](https://github.com/cubrid-lab/cubrid-go/issues/88).
 - A statement closed while rows from it are open keeps its server handle,
   one of the CAS's limited query entries, until those rows are closed or
   have read their last row. `database/sql` closes its `Rows` when they are
@@ -196,6 +193,12 @@ Run with `go test -race`:
 - `TestRowsFetchHoldsConnMutex`, `TestRowsCloseHoldsConnMutex`: direct driver
   use; FETCH and CLOSE_REQ hold the connection mutex until their reply has
   been read.
+- `TestPingContextCanceled`, `TestDBPingContextDiscardsDeadConn` and the
+  other tests in `ping_test.go`: `db.PingContext` sends `GET_DB_VERSION` on a
+  pooled connection, returns promptly when its context is canceled or its
+  deadline passes, and a dead connection returns `driver.ErrBadConn` and is
+  discarded from the pool; a connection retired by a canceled ping or query
+  is not reused (`driver.Validator`) (#88).
 - `TestCancelWatcherSkipsSocketClearedByReconnect`,
   `TestLateCancelDoesNotLeakIntoNextRequest`, `TestCancelDuringReconnectDial`
   and the stale-handle tests in `stale_handle_test.go` cover the cancel

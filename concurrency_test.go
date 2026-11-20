@@ -157,7 +157,7 @@ func TestRowsFetchHoldsConnMutex(t *testing.T) {
 	go func() {
 		<-fetching
 		close(competing)
-		pinged <- c.Ping()
+		pinged <- c.Ping(context.Background())
 	}()
 	nextErr := r.Next(dest)
 	if <-interleaved {
@@ -199,7 +199,7 @@ func TestRowsCloseHoldsConnMutex(t *testing.T) {
 	go func() {
 		<-closing
 		close(competing)
-		pinged <- c.Ping()
+		pinged <- c.Ping(context.Background())
 	}()
 	closeErr := r.Close()
 	if <-interleaved {
