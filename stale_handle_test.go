@@ -196,6 +196,12 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 			reply = outTranPacket(oneRowFetchBody())
 		case FuncCloseReqHandle:
 			f.record(fmt.Sprintf("%s CLOSE_REQ %s", name, sqlOf(body)))
+			// A later request that names the released handle is logged as
+			// such instead of with the statement's SQL.
+			h := int(int32(binary.BigEndian.Uint32(body[4:8])))
+			if i := h - int(base); i >= 1 && i <= len(handles) {
+				handles[i-1] = fmt.Sprintf("released handle %d", h)
+			}
 			reply = simpleResponsePacket(0)
 		case FuncConClose:
 			f.record(name + " CON_CLOSE")

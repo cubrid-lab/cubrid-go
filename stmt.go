@@ -19,22 +19,58 @@ type stmt struct {
 	// generation is the conn's physical-session generation at PREPARE. The
 	// handle is valid only on that session; see conn.sendAndRecvHandle.
 	generation uint64
+	// openRows counts the rows from Query that may still FETCH with
+	// queryHandle. While it is positive, Close defers CLOSE_REQ to the last
+	// of those rows to close, and Exec and Query do not EXECUTE queryHandle
+	// again, because the CAS would replace the cursor those rows fetch from
+	// with the new result; they use PREPARE_AND_EXECUTE, which gives the new
+	// execution its own handle (#86). closed, queryHandle and openRows are
+	// guarded by conn.mu.
+	openRows int
 }
 
 // Close releases the server-side prepared-statement handle (FC=6). A handle
 // from an earlier physical session is dropped without sending CLOSE_REQ.
+//
+// database/sql closes a statement prepared on a Tx or a *sql.Conn at once,
+// even while rows from it are open, and those rows fetch with the
+// statement's handle. Releasing it then would let the CAS hand the same
+// number to the next PREPARE, and the rows would fetch that statement's
+// result. So while such rows are open, Close only marks the statement
+// closed, and the last of them to close releases the handle, as database/sql
+// does itself for a statement prepared on a *sql.DB.
 func (s *stmt) Close() error {
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
 	if s.closed {
 		return nil
 	}
 	s.closed = true
+	if s.openRows == 0 {
+		s.releaseHandleLocked()
+	}
+	return nil
+}
+
+// releaseHandleLocked sends CLOSE_REQ for the statement's handle, or drops a
+// handle from an earlier session. The caller holds conn.mu.
+func (s *stmt) releaseHandleLocked() {
 	if s.queryHandle > 0 {
-		s.conn.mu.Lock()
-		defer s.conn.mu.Unlock()
 		s.conn.closeQueryHandle(s.queryHandle, s.generation)
 		s.queryHandle = 0
 	}
-	return nil
+}
+
+// sqlForExecLocked returns the statement's SQL with args interpolated, or
+// the SQL as prepared when there are none. The caller holds conn.mu.
+func (s *stmt) sqlForExecLocked(args []driver.Value) (string, error) {
+	if len(args) == 0 {
+		return s.query, nil
+	}
+	if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
+		return "", err
+	}
+	return InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
 }
 
 // NumInput returns the number of ? placeholders the server found during Prepare.
@@ -57,12 +93,12 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	var res *ExecuteResult
 	var paeRes *PrepareAndExecuteResult
 
-	if len(args) > 0 {
-		// Client-side interpolation: embed args into SQL, use FC=41.
-		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
-			return nil, err
-		}
-		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
+	if len(args) > 0 || s.openRows > 0 {
+		// Client-side interpolation: embed args into SQL, use FC=41. Without
+		// args, FC=41 is used while rows still fetch with the prepared
+		// handle, because executing that handle again would replace their
+		// server cursor (see openRows).
+		interpolatedSQL, err := s.sqlForExecLocked(args)
 		if err != nil {
 			return nil, err
 		}
@@ -132,12 +168,11 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	var gen uint64
 	var ownsHandle bool
 
-	if len(args) > 0 {
-		// Client-side interpolation: embed args into SQL, use FC=41.
-		if err := s.conn.ensureStringEscapeModeLocked(); err != nil {
-			return nil, err
-		}
-		interpolatedSQL, err := InterpolateArgsWithMode(s.query, args, s.conn.stringEscapeMode)
+	if len(args) > 0 || s.openRows > 0 {
+		// Client-side interpolation: embed args into SQL, use FC=41. Without
+		// args, FC=41 gives these rows their own handle while earlier rows
+		// still fetch with the prepared one (see openRows).
+		interpolatedSQL, err := s.sqlForExecLocked(args)
 		if err != nil {
 			return nil, err
 		}
@@ -190,6 +225,12 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		exhausted:    tupleCount == 0 || len(fetchedRows) >= totalCount,
 		fetchSize:    defaultFetchSize,
 		closeHandle:  ownsHandle,
+	}
+	if !ownsHandle && !r.exhausted {
+		// The rows will FETCH with the statement's handle; keep it until
+		// they no longer need it (see Close).
+		r.stmt = s
+		s.openRows++
 	}
 
 	return r, nil
