@@ -33,6 +33,21 @@ class ReleaseNotesQualityTests(unittest.TestCase):
         body = GOOD.replace(line, line + "\n" + line)
         self.assertTrue(any("duplicate bullet" in x for x in self.check(body)))
 
+    def test_each_change_gets_its_own_credit(self):
+        # A credit elsewhere in the release must not hide a missing byline.
+        body = GOOD.replace(
+            "\\n**Full Changelog:**",
+            "\\n- Also improve connection errors without naming the author\\n\\n**Full Changelog:**",
+        )
+        self.assertTrue(any("missing contributor credit" in x for x in self.check(body)))
+
+    def test_compatibility_warning_does_not_need_a_change_credit(self):
+        body = GOOD.replace(
+            "### Bug Fixes",
+            "### Compatibility\\n\\n- This version has no verified support for older brokers.\\n\\n### Bug Fixes",
+        )
+        self.assertEqual([], self.check(body))
+
     def test_generated_bullet_is_not_curated(self):
         body = GOOD.replace("- Report connection errors", "* fix: report connection errors")
         self.assertTrue(any("uncurated" in x for x in self.check(body)))
