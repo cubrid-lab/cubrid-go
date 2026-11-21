@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/cubrid-lab/cubrid-go/compare/v0.2.1...v0.3.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* move the Go module to github.com/cubrid-lab/cubrid-go ([#82](https://github.com/cubrid-lab/cubrid-go/issues/82))
+
+### Features
+
+* add context.Context support for query cancellation ([b43a5a6](https://github.com/cubrid-lab/cubrid-go/commit/b43a5a60e01e6a429259c392c8d9ca7d0103250d))
+
+
+### Bug Fixes
+
+* audit concurrent reconnect handling and document the concurrency contract ([#89](https://github.com/cubrid-lab/cubrid-go/issues/89)) ([142ce8d](https://github.com/cubrid-lab/cubrid-go/commit/142ce8d8b64159caeaee804084fe3bda432dc990))
+* **ci:** run govulncheck job on Go 1.25 ([#25](https://github.com/cubrid-lab/cubrid-go/issues/25)) ([598bba9](https://github.com/cubrid-lab/cubrid-go/commit/598bba977d1103518ff5b9c0affae40593887c7e))
+* **ci:** run govulncheck on the stable Go release ([#30](https://github.com/cubrid-lab/cubrid-go/issues/30)) ([fce6cf3](https://github.com/cubrid-lab/cubrid-go/commit/fce6cf332297c83dd6c345b3e11b4e5edc5007d9))
+* escape string parameters per negotiated no_backslash_escapes mode ([#27](https://github.com/cubrid-lab/cubrid-go/issues/27)) ([#28](https://github.com/cubrid-lab/cubrid-go/issues/28)) ([b7b3a5d](https://github.com/cubrid-lab/cubrid-go/commit/b7b3a5d2f9d04ed2d4b96dff22df6ca5dcebcab6))
+* implement driver.Pinger and driver.Validator so pings reach the server ([#94](https://github.com/cubrid-lab/cubrid-go/issues/94)) ([4bf9c7c](https://github.com/cubrid-lab/cubrid-go/commit/4bf9c7c9c6b5c2be6438edbff6dbaddb4dfe8282))
+* keep a statement's handle alive while its rows are open ([#93](https://github.com/cubrid-lab/cubrid-go/issues/93)) ([d057821](https://github.com/cubrid-lab/cubrid-go/commit/d0578212cfb6eabefb12a75640141b4b0c2224ae))
+* keep request cancellation when the CHECK_CAS probe sets its deadline ([#85](https://github.com/cubrid-lab/cubrid-go/issues/85)) ([8f854ae](https://github.com/cubrid-lab/cubrid-go/commit/8f854aedf4ad61846799c7b097e03f48aa36d92f))
+* prevent database/sql replay of ambiguous CAS writes ([11c6588](https://github.com/cubrid-lab/cubrid-go/commit/11c6588ae397920df6bcf2708d9a8c62581f0ded))
+* reconnect when CAS released under KEEP_CONNECTION=AUTO ([#12](https://github.com/cubrid-lab/cubrid-go/issues/12)) ([e9db355](https://github.com/cubrid-lab/cubrid-go/commit/e9db355e64f6b191e512faa882340d31475a3665))
+* refuse prepared statement handles from an earlier physical session ([#42](https://github.com/cubrid-lab/cubrid-go/issues/42)) ([8093f61](https://github.com/cubrid-lab/cubrid-go/commit/8093f6108eeedcf69b379c05e576a89e04d64310))
+* return the generated AUTO_INCREMENT id from LastInsertId() ([#38](https://github.com/cubrid-lab/cubrid-go/issues/38)) ([951690a](https://github.com/cubrid-lab/cubrid-go/commit/951690a451d78dab86fc9a06c1f3cedf755b20bf))
+
+
+### Miscellaneous Chores
+
+* move the Go module to github.com/cubrid-lab/cubrid-go ([#82](https://github.com/cubrid-lab/cubrid-go/issues/82)) ([70061ec](https://github.com/cubrid-lab/cubrid-go/commit/70061ec84d64fb4f4800523d427a1cfae37e8b0a))
+
 ## [Unreleased]
 
 ### Upgrade notes
