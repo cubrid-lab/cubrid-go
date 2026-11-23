@@ -18,7 +18,8 @@ func buildProtocolHeader(dataLength int, casInfo [SizeCASInfo]byte) []byte {
 
 // maxRequestPayload is the largest request payload the 4-byte CAS
 // DATA_LENGTH header field (and the int32 length prefixes inside it) can carry.
-const maxRequestPayload = math.MaxInt32
+// It is a variable only so tests can lower it; production never changes it.
+var maxRequestPayload int64 = math.MaxInt32
 
 // checkRequestLength rejects a framed request whose payload (everything after
 // DATA_LENGTH and CAS_INFO) does not fit maxRequestPayload. Every int32 length
@@ -27,7 +28,7 @@ const maxRequestPayload = math.MaxInt32
 func checkRequestLength(packetLen int64) error {
 	if payload := packetLen - SizeDataLength - SizeCASInfo; payload > maxRequestPayload {
 		return &ProgrammingError{CubridError{Code: -1,
-			Message: fmt.Sprintf("request payload of %d bytes exceeds the CAS protocol limit of %d bytes", payload, int64(maxRequestPayload))}}
+			Message: fmt.Sprintf("request payload of %d bytes exceeds the CAS protocol limit of %d bytes", payload, maxRequestPayload)}}
 	}
 	return nil
 }
@@ -168,7 +169,7 @@ func (w *PacketWriter) addNull() {
 // addDatetime writes a length-prefixed datetime value (7 x int16 = 14 bytes).
 func (w *PacketWriter) addDatetime(t time.Time) {
 	w.writeInt(SizeDatetime)
-	w.writeShort(int16(t.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; the driver interpolates time.Time args into SQL client-side and never calls this writer with caller-supplied times
+	w.writeShort(int16(t.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; internal callers never pass caller-supplied times (the driver interpolates time.Time args into SQL client-side); this writer is unexported
 	w.writeShort(int16(t.Month()))            // #nosec G115 -- time.Time.Month() is 1..12
 	w.writeShort(int16(t.Day()))              // #nosec G115 -- time.Time.Day() is 1..31
 	w.writeShort(int16(t.Hour()))             // #nosec G115 -- time.Time.Hour() is 0..23
@@ -180,7 +181,7 @@ func (w *PacketWriter) addDatetime(t time.Time) {
 // addDate writes a datetime with zeroed time fields.
 func (w *PacketWriter) addDate(t time.Time) {
 	w.writeInt(SizeDatetime)
-	w.writeShort(int16(t.Year()))  // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; the driver interpolates time.Time args into SQL client-side and never calls this writer with caller-supplied times
+	w.writeShort(int16(t.Year()))  // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; internal callers never pass caller-supplied times (the driver interpolates time.Time args into SQL client-side); this writer is unexported
 	w.writeShort(int16(t.Month())) // #nosec G115 -- time.Time.Month() is 1..12
 	w.writeShort(int16(t.Day()))   // #nosec G115 -- time.Time.Day() is 1..31
 	w.writeShort(0)                // hour

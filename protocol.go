@@ -358,7 +358,7 @@ func WriteFetch(queryHandle, currentTupleCount, fetchSize int, casInfo [SizeCASI
 	w.writeByte(FuncFetch)
 	w.addInt(int32(queryHandle))           // #nosec G115 -- query handles are issued by the CAS as signed INTs (parsed with parseInt), so they fit int32
 	w.addInt(int32(currentTupleCount + 1)) // #nosec G115 -- rows.fetch only runs while fetchedCount < totalCount, and totalCount is a CAS INT, so the cursor position fits int32
-	w.addInt(int32(fetchSize))             // #nosec G115 -- callers pass defaultFetchSize (a small constant)
+	w.addInt(int32(fetchSize))             // #nosec G115 -- internal callers pass defaultFetchSize (a small constant); external callers of the exported WriteFetch own this value
 	w.addByte(0)                           // case_sensitive
 	w.addInt(0)                            // resultset_index
 	payload := w.toBytes()
@@ -667,7 +667,7 @@ func encodeOneParam(w *PacketWriter, arg driver.Value) {
 		v = v.UTC()
 		w.writeInt(1 + SizeDatetime) // type + 7×int16
 		w.writeByte(TypeDatetime)
-		w.writeShort(int16(v.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; time.Time args are interpolated into SQL client-side (stmt.sqlForExecLocked), so this encoder never sees caller-supplied years
+		w.writeShort(int16(v.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; internal callers interpolate time.Time args into SQL client-side (stmt.sqlForExecLocked) and call WriteExecute with nil args; external callers of the exported WriteExecute can still send an out-of-range year (wrong date, not memory-unsafe)
 		w.writeShort(int16(v.Month()))            // #nosec G115 -- time.Time.Month() is 1..12
 		w.writeShort(int16(v.Day()))              // #nosec G115 -- time.Time.Day() is 1..31
 		w.writeShort(int16(v.Hour()))             // #nosec G115 -- time.Time.Hour() is 0..23
