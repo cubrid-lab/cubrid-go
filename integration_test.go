@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -79,11 +80,12 @@ func newOwnedTable(t testing.TB, db *sql.DB, purpose, columns string) string {
 	return name
 }
 
-// tableExists reports whether a table of that name is in the catalog.
+// tableExists reports whether the connected user owns a table of that
+// name, so another user's table of the same name does not count.
 func tableExists(t testing.TB, db *sql.DB, name string) bool {
 	t.Helper()
 	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM db_class WHERE class_name = ?", name).Scan(&n); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM db_class WHERE class_name = ? AND owner_name = CURRENT_USER", name).Scan(&n); err != nil {
 		t.Fatalf("db_class lookup for %s: %v", name, err)
 	}
 	return n > 0
@@ -190,7 +192,7 @@ func TestDatabaseSQLIntegration(t *testing.T) {
 
 	// Verify count
 	var finalCount int
-	err = db.QueryRow("SELECT COUNT(*) FROM " + tbl + "").Scan(&finalCount)
+	err = db.QueryRow("SELECT COUNT(*) FROM " + tbl).Scan(&finalCount)
 	if err != nil {
 		t.Fatalf("COUNT: %v", err)
 	}
@@ -203,6 +205,9 @@ func TestDatabaseSQLIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	// Ends the transaction if the test stops before Rollback below, so
+	// its locks cannot block the cleanup DROP. ErrTxDone is expected.
+	defer tx.Rollback()
 	_, err = tx.Exec("INSERT INTO "+tbl+" (name, age) VALUES (?, ?)", "Charlie", 35)
 	if err != nil {
 		t.Fatalf("tx INSERT: %v", err)
@@ -212,7 +217,7 @@ func TestDatabaseSQLIntegration(t *testing.T) {
 	}
 
 	// Verify rollback
-	err = db.QueryRow("SELECT COUNT(*) FROM " + tbl + "").Scan(&finalCount)
+	err = db.QueryRow("SELECT COUNT(*) FROM " + tbl).Scan(&finalCount)
 	if err != nil {
 		t.Fatalf("COUNT after rollback: %v", err)
 	}
@@ -396,10 +401,18 @@ func TestOwnedTableFixtureIntegration(t *testing.T) {
 		t.Fatalf("sentinel INSERT: %v", err)
 	}
 	t.Run("existing table is refused", func(t *testing.T) {
-		if err := createOwnedTable(t, db, existing, "v INT"); err == nil {
+		err := createOwnedTable(t, db, existing, "v INT")
+		if err == nil {
 			t.Fatalf("createOwnedTable reused existing table %s", existing)
 		}
+		t.Logf("refused: %v", err)
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("CREATE TABLE %s failed for another reason than an existing table: %v", existing, err)
+		}
 	})
+	if !tableExists(t, db, existing) {
+		t.Fatalf("existing table %s is gone after the refused create", existing)
+	}
 	var v, n int
 	if err := db.QueryRow("SELECT COUNT(*), MAX(v) FROM "+existing).Scan(&n, &v); err != nil {
 		t.Fatalf("existing table after refused create: %v", err)
