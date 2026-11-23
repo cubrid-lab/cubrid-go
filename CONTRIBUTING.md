@@ -109,6 +109,12 @@ go test -v -run Integration ./...
 docker compose down
 ```
 
+The live tests connect to `cubrid://dba:@localhost:33000/testdb?autocommit=true` unless the
+test-only `CUBRID_GO_TEST_DSN` variable names another Go `cubrid://` URL. Each test creates its own
+tables named `go_test_<purpose>_<random hex>` with a plain `CREATE TABLE` and drops only those in
+`t.Cleanup`; it never drops or reuses a pre-existing table (such as a fixed `go_test_basic`), and a
+failing cleanup `DROP` fails the test.
+
 ---
 
 ## Code Style
