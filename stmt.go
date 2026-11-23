@@ -171,7 +171,7 @@ func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Resu
 		}
 		res, err = ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
 		if err != nil {
-			return nil, err
+			return nil, s.conn.replyErr(err)
 		}
 	}
 
@@ -290,7 +290,7 @@ func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Row
 		}
 		res, err := ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
 		if err != nil {
-			return nil, err
+			return nil, s.conn.replyErr(err)
 		}
 		totalCount = res.TotalTupleCount
 		tupleCount = res.TupleCount

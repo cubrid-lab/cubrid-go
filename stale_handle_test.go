@@ -45,6 +45,10 @@ type fakeCAS struct {
 	// instead of 1, so a handle sent to a session that did not issue it is
 	// always logged as an unknown handle.
 	distinctHandles bool
+	// rewrite, when set, replaces the framed reply the session is about to
+	// write for a request with function code fc; fc is 0 for the
+	// OpenDatabase reply. Tests use it to send malformed replies.
+	rewrite func(fc byte, reply []byte) []byte
 }
 
 func newFakeCAS(t *testing.T) *fakeCAS {
@@ -129,7 +133,11 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 	broker[4] = ProtoVersion
 	open.writeRawBytes(broker)
 	open.writeInt(int32(session))
-	if _, err := nc.Write(outTranPacket(open.toBytes())); err != nil {
+	openReply := outTranPacket(open.toBytes())
+	if f.rewrite != nil {
+		openReply = f.rewrite(0, openReply)
+	}
+	if _, err := nc.Write(openReply); err != nil {
 		return
 	}
 
@@ -218,6 +226,9 @@ func (f *fakeCAS) serve(session int, nc net.Conn) {
 		}
 		if f.beforeReply != nil && !f.beforeReply(fc, nc) {
 			return
+		}
+		if f.rewrite != nil {
+			reply = f.rewrite(fc, reply)
 		}
 		if _, err := nc.Write(reply); err != nil {
 			return

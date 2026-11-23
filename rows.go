@@ -104,7 +104,7 @@ func (r *rows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 
-	resp, err := r.fetch()
+	res, err := r.fetch()
 	if errors.Is(err, errStaleHandle) {
 		// The connection reconnected since this result set was opened, so
 		// its server cursor is gone. Nothing was sent; the rows already
@@ -112,10 +112,6 @@ func (r *rows) Next(dest []driver.Value) error {
 		return &OperationalError{CubridError{Code: -1, Message: "result set was " +
 			"opened on an earlier physical session; its server cursor no longer exists"}}
 	}
-	if err != nil {
-		return err
-	}
-	res, err := ParseFetch(resp, r.columns, r.stmtType)
 	if err != nil {
 		return err
 	}
@@ -145,15 +141,24 @@ func (r *rows) markExhausted() {
 	}
 }
 
-// fetch sends FETCH for the next block of rows and returns the reply. It
+// fetch sends FETCH for the next block of rows and parses the reply. It
 // holds the conn mutex, as every other request path does: FETCH may reconnect,
 // which replaces the socket, the CAS_INFO and the session generation, and
-// another request must not be sent before this reply has been read.
-func (r *rows) fetch() ([]byte, error) {
+// another request must not be sent before this reply has been read. A
+// malformed reply retires the connection under the same lock.
+func (r *rows) fetch() (*FetchResult, error) {
 	r.conn.mu.Lock()
 	defer r.conn.mu.Unlock()
 	fetchReq := WriteFetch(r.queryHandle, r.fetchedCount, r.fetchSize, r.conn.casInfo)
-	return r.conn.sendAndRecvHandle(r.generation, fetchReq)
+	resp, err := r.conn.sendAndRecvHandle(r.generation, fetchReq)
+	if err != nil {
+		return nil, err
+	}
+	res, err := ParseFetch(resp, r.columns, r.stmtType)
+	if err != nil {
+		return nil, r.conn.replyErr(err)
+	}
+	return res, nil
 }
 
 // fillDest copies one server row into the dest slice and advances the offset.

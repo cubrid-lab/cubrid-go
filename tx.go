@@ -16,7 +16,7 @@ func (t *tx) Commit() error {
 		return err
 	}
 	if err = ParseSimpleResponse(resp); err != nil {
-		return err
+		return t.conn.replyErr(err)
 	}
 	t.conn.autoCommit = true
 	return nil
@@ -33,7 +33,7 @@ func (t *tx) Rollback() error {
 		return err
 	}
 	if err = ParseSimpleResponse(resp); err != nil {
-		return err
+		return t.conn.replyErr(err)
 	}
 	t.conn.autoCommit = true
 	return nil

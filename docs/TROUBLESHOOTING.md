@@ -10,6 +10,7 @@ Common issues and solutions when using cubrid-go.
   - [Connection timeout](#connection-timeout)
   - [dial CAS error after broker handshake](#dial-cas-error-after-broker-handshake)
   - [Database name is required](#database-name-is-required)
+  - [`malformed CAS reply` error](#malformed-cas-reply-error)
   - [Prepared statement fails after a broker restart](#prepared-statement-fails-after-a-broker-restart)
 - [Query Issues](#query-issues)
   - [Expected N bind args, got M](#expected-n-bind-args-got-m)
@@ -161,6 +162,29 @@ use a fresh connection.
 The failure classification is covered by fake-CAS regression tests and
 the regular integration matrix; a genuine interrupted write on a live
 broker is still a separate failure-injection test.
+
+### `malformed CAS reply` error
+
+Symptoms: a query, `rows.Next()`, `Commit`, `Ping` or `sql.Open`'s first
+connection returns an error containing `malformed CAS reply`, for example
+`column count -1 ... does not fit the ... bytes remaining` or
+`DATA_LENGTH ... exceeds the maximum response size`.
+
+The driver checks every length and count in a CAS reply against the bytes the
+reply actually holds before it allocates or slices anything, and rejects a
+reply header that declares more than 2,147,483,647 bytes (the CAS writes the
+length as a signed 32-bit integer). A reply that fails these checks comes from
+a broken or incompatible CAS, a proxy that corrupted the stream, or something
+that is not a CUBRID broker on that port. The driver returns an
+`*OperationalError` and retires the physical connection, so `database/sql`
+opens a new one for the next operation; it does not return
+`driver.ErrBadConn`, because the request had already been sent and its outcome
+is unknown (see above). `Ping`, which changes nothing on the server, returns
+an error matching `driver.ErrBadConn`.
+
+Check that the DSN points at a CUBRID broker port and that nothing between the
+client and the broker rewrites traffic. If it persists against a real broker,
+report it with the broker version and the failing statement.
 
 ### Prepared statement fails after a broker restart
 
