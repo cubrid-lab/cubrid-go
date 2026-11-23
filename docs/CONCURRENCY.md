@@ -160,7 +160,12 @@ expect:
   prepared statement watch their context: canceling it, or reaching its
   deadline, while the reply is outstanding returns the context's error and
   retires the connection, which `database/sql` then closes instead of
-  reusing. Fetching more rows (`Rows.Next`), `Commit` and `Rollback` take no
+  reusing. A reply that has already arrived wins over a later cancellation:
+  the call returns its result, and if the cancellation interrupts the
+  cleanup that follows (releasing a `PREPARE_AND_EXECUTE` handle, the
+  `LAST_INSERT_ID()` lookup), the connection is retired so the handle is not
+  left on a pooled session, and a failed lookup is reported by
+  `Result.LastInsertId` rather than by `Exec`. Fetching more rows (`Rows.Next`), `Commit` and `Rollback` take no
   context and have no deadline of their own: the `timeout` DSN
   option bounds only a reconnect handshake and the `CHECK_CAS` probe before
   them. A CAS that stops answering mid-request can block them, holding their
@@ -211,6 +216,10 @@ Run with `go test -race`:
   interrupted connection is retired (`IsValid` is false, the next request
   returns `driver.ErrBadConn` without sending) and not reused by the pool,
   and an already canceled context sends nothing (#87).
+  `TestReplyThatArrivedWinsOverLateCancel` and `TestLastInsertIDLookupCanceled`:
+  a cancellation after the reply arrived returns the result without leaving
+  the handle on a pooled session, and one during the `LAST_INSERT_ID()` lookup
+  keeps `Exec` successful with `LastInsertId` returning the error.
 - `TestCancelWatcherSkipsSocketClearedByReconnect`,
   `TestLateCancelDoesNotLeakIntoNextRequest`, `TestCancelDuringReconnectDial`
   and the stale-handle tests in `stale_handle_test.go` cover the cancel

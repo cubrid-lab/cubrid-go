@@ -126,7 +126,9 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 }
 
 // execLocked runs Exec. The caller holds conn.mu. If the main request fails
-// or ctx is done once it has returned, it returns ctx's error.
+// while ctx is done, it returns ctx's error; once the reply has arrived, the
+// request completed and its result is returned even if ctx ended meanwhile,
+// and the FC=41 handle is still closed.
 func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Result, error) {
 	var res *ExecuteResult
 	var paeRes *PrepareAndExecuteResult
@@ -145,9 +147,6 @@ func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Resu
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, err
-		}
-		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		// FC=41 allocates a server-side query handle; close it immediately
@@ -170,9 +169,6 @@ func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Resu
 			}
 			return nil, err
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		res, err = ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
 		if err != nil {
 			return nil, err
@@ -181,8 +177,9 @@ func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Resu
 
 	// Retrieve last insert ID for INSERT statements.
 	var lastID int64
+	var lastIDErr error
 	if s.stmtType == StmtInsert {
-		lastID = s.conn.fetchLastInsertID()
+		lastID, lastIDErr = s.conn.fetchLastInsertID()
 	}
 
 	var affected int64
@@ -196,7 +193,7 @@ func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Resu
 		}
 	}
 
-	return &result{lastInsertID: lastID, rowsAffected: affected}, nil
+	return &result{lastInsertID: lastID, lastInsertIDErr: lastIDErr, rowsAffected: affected}, nil
 }
 
 // Query executes the statement and returns the result rows.
@@ -243,8 +240,9 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	return s.queryLocked(ctx, values)
 }
 
-// queryLocked runs Query. The caller holds conn.mu. If the request fails or
-// ctx is done once it has returned, it returns ctx's error.
+// queryLocked runs Query. The caller holds conn.mu. If the request fails
+// while ctx is done, it returns ctx's error; once the reply has arrived, the
+// rows are returned even if ctx ended meanwhile.
 func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Rows, error) {
 	var totalCount, tupleCount int
 	var fetchedRows [][]interface{}
@@ -268,9 +266,6 @@ func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Row
 			}
 			return nil, err
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		totalCount = paeRes.TotalTupleCount
 		tupleCount = paeRes.TupleCount
 		fetchedRows = paeRes.Rows
@@ -291,9 +286,6 @@ func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Row
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, err
-		}
-		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		res, err := ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
@@ -333,11 +325,14 @@ func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Row
 	return r, nil
 }
 
-// result implements driver.Result.
+// result implements driver.Result. lastInsertIDErr is set when the
+// LAST_INSERT_ID() lookup after an INSERT failed; the INSERT itself ran, so
+// Exec succeeds and only LastInsertId reports the error.
 type result struct {
-	lastInsertID int64
-	rowsAffected int64
+	lastInsertID    int64
+	lastInsertIDErr error
+	rowsAffected    int64
 }
 
-func (r *result) LastInsertId() (int64, error) { return r.lastInsertID, nil }
+func (r *result) LastInsertId() (int64, error) { return r.lastInsertID, r.lastInsertIDErr }
 func (r *result) RowsAffected() (int64, error) { return r.rowsAffected, nil }

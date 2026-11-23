@@ -568,10 +568,16 @@ func probeInt(v interface{}) (int64, bool) {
 
 // fetchLastInsertID retrieves the last auto-generated ID via SQL.
 // It must run on the same CAS session as the INSERT; see checkReconnect.
-func (c *conn) fetchLastInsertID() int64 {
+// It returns an error only when the lookup request fails (for example when
+// the request's context ends during it); the INSERT has then already run,
+// so callers report the error through Result.LastInsertId, not Exec.
+func (c *conn) fetchLastInsertID() (int64, error) {
 	res, err := c.execSQL("SELECT LAST_INSERT_ID()")
 	if err != nil {
-		return 0
+		if ctxErr := c.requestErr(); ctxErr != nil {
+			return 0, fmt.Errorf("cubrid: LAST_INSERT_ID lookup interrupted after the statement ran: %w (%v)", ctxErr, err)
+		}
+		return 0, fmt.Errorf("cubrid: LAST_INSERT_ID lookup failed after the statement ran: %w", err)
 	}
 	// FC=41 allocates a server-side query handle; close it immediately
 	// to avoid exhausting the CAS query-entry pool (default limit: 100).
@@ -579,11 +585,11 @@ func (c *conn) fetchLastInsertID() int64 {
 		defer c.closeQueryHandle(res.QueryHandle, c.generation)
 	}
 	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
-		return 0
+		return 0, nil
 	}
 	switch v := res.Rows[0][0].(type) {
 	case int64:
-		return v
+		return v, nil
 	case string:
 		var n int64
 		for _, ch := range v {
@@ -593,9 +599,9 @@ func (c *conn) fetchLastInsertID() int64 {
 				break
 			}
 		}
-		return n
+		return n, nil
 	default:
-		return 0
+		return 0, nil
 	}
 }
 
@@ -814,10 +820,10 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		}
 		return nil, err
 	}
+	// The reply has arrived, so the request completed: return its result
+	// even if ctx ended meanwhile. Only a request whose reply was still
+	// outstanding returns ctx's error (above).
 	gen := c.generation
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 
 	r := &rows{
 		conn:         c,
@@ -877,10 +883,10 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 		return nil, err
 	}
+	// The reply has arrived, so the request completed: return its result
+	// even if ctx ended meanwhile. Only a request whose reply was still
+	// outstanding returns ctx's error (above).
 	gen := c.generation
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 
 	var affected int64
 	for _, info := range res.ResultInfos {
@@ -888,15 +894,16 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 
 	var lastID int64
+	var lastIDErr error
 	if res.StatementType == StmtInsert {
-		lastID = c.fetchLastInsertID()
+		lastID, lastIDErr = c.fetchLastInsertID()
 	}
 
 	if res.QueryHandle > 0 {
 		c.closeQueryHandle(res.QueryHandle, gen)
 	}
 
-	return &result{lastInsertID: lastID, rowsAffected: affected}, nil
+	return &result{lastInsertID: lastID, lastInsertIDErr: lastIDErr, rowsAffected: affected}, nil
 }
 
 // ServerVersion returns the CUBRID engine version string.

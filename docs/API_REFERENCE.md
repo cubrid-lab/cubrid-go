@@ -522,6 +522,8 @@ id, err := result.LastInsertId()
 ```
 
 > **Implementation detail**: cubrid-go reads `SELECT LAST_INSERT_ID()` on the same CAS session as the INSERT. After an autocommitted statement the driver checks the CAS with `CHECK_CAS` (FC=32) and reconnects only when that check fails, so the session that generated the id is kept.
+>
+> If that lookup fails, for example because the `Exec` context is canceled during it, `Exec` still succeeds, because the INSERT has already run, and `RowsAffected` is correct. `LastInsertId` then returns the lookup error (matching `context.Canceled` or `context.DeadlineExceeded` when the context ended).
 
 ### RowsAffected
 

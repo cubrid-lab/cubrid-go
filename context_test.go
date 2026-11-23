@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -511,5 +513,192 @@ func TestPreparedPathsAlreadyCanceledSendNothing(t *testing.T) {
 	}
 	if !c.IsValid() {
 		t.Fatalf("IsValid = false after calls that sent nothing")
+	}
+}
+
+// cancelOnFirst makes f cancel ctx when the first request with function code
+// fc whose log entry contains substr reaches it. With drop, that request's
+// session is closed without a reply; otherwise the reply is still sent.
+func cancelOnFirst(f *fakeCAS, fc byte, substr string, cancel context.CancelFunc, drop bool) {
+	var once sync.Once
+	f.beforeReply = func(code byte, _ net.Conn) bool {
+		if code != fc {
+			return true
+		}
+		entries := f.entries()
+		if len(entries) == 0 || !strings.Contains(entries[len(entries)-1], substr) {
+			return true
+		}
+		hit := false
+		once.Do(func() { hit = true })
+		if !hit {
+			return true
+		}
+		cancel()
+		return !drop
+	}
+}
+
+// expiryAfterWriteConn holds back any deadline that expires the socket until
+// the driver starts a Write after it was requested (or 200ms pass), so a
+// cancel watcher that fires while a reply is in transit cannot interrupt
+// reading that reply.
+type expiryAfterWriteConn struct {
+	net.Conn
+	writes atomic.Int64
+}
+
+func (e *expiryAfterWriteConn) SetDeadline(t time.Time) error {
+	if !t.IsZero() && !t.After(time.Now()) {
+		n := e.writes.Load()
+		for end := time.Now().Add(200 * time.Millisecond); e.writes.Load() == n && time.Now().Before(end); {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	return e.Conn.SetDeadline(t)
+}
+
+func (e *expiryAfterWriteConn) Write(b []byte) (int, error) {
+	e.writes.Add(1)
+	return e.Conn.Write(b)
+}
+
+// TestReplyThatArrivedWinsOverLateCancel: when ctx ends while the FC=41
+// reply is already on its way, the request completed, so Exec returns its
+// result instead of ctx's error, and the reply's server handle is not left
+// on a pooled session: either CLOSE_REQ reaches the CAS or, when the
+// cancellation interrupts that cleanup, the session is retired and the
+// handle goes with it (#87).
+func TestReplyThatArrivedWinsOverLateCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// run calls wrap just before the request under test.
+		run func(ctx context.Context, c *conn, wrap func()) (driver.Result, error)
+		// closed is the CLOSE_REQ log entry for the FC=41 handle.
+		closed string
+	}{
+		{name: "conn.ExecContext", closed: "s1 CLOSE_REQ UPDATE t SET v = 1",
+			run: func(ctx context.Context, c *conn, wrap func()) (driver.Result, error) {
+				wrap()
+				return c.ExecContext(ctx, "UPDATE t SET v = 1", nil)
+			}},
+		{name: "stmt.ExecContext", closed: "s1 CLOSE_REQ SELECT v FROM t",
+			run: func(ctx context.Context, c *conn, wrap func()) (driver.Result, error) {
+				// Rows that still fetch with the prepared handle make Exec
+				// use FC=41 (see stmt.openRows).
+				ds, err := c.Prepare("SELECT v FROM t")
+				if err != nil {
+					return nil, err
+				}
+				s := ds.(*stmt)
+				if _, err := s.Query(nil); err != nil {
+					return nil, err
+				}
+				wrap()
+				return s.ExecContext(ctx, nil)
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeCAS(t)
+			f.rowsTotal = 2 // the stmt case's rows stay open
+			dc, err := (&Driver{}).Open(f.dsn())
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			c := dc.(*conn)
+			defer func() { _ = c.Close() }()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f.beforeReply = func(code byte, _ net.Conn) bool {
+				if code == FuncPrepareAndExecute {
+					cancel() // the reply is written right after this
+				}
+				return true
+			}
+			wrap := func() { c.setSocket(&expiryAfterWriteConn{Conn: c.socket}) }
+
+			res, err := tc.run(ctx, c, wrap)
+			if err != nil {
+				t.Fatalf("%s = %v, want its result: the reply had arrived", tc.name, err)
+			}
+			if _, err := res.RowsAffected(); err != nil {
+				t.Fatalf("RowsAffected: %v", err)
+			}
+			if ctx.Err() == nil {
+				t.Fatalf("the context was never canceled")
+			}
+			released := false
+			for _, e := range f.entries() {
+				released = released || e == tc.closed
+			}
+			if !released && c.IsValid() {
+				t.Fatalf("the FC=41 handle was neither released nor its session retired; log: %q", f.entries())
+			}
+		})
+	}
+}
+
+// TestLastInsertIDLookupCanceled: canceling ctx during the LAST_INSERT_ID()
+// lookup after an INSERT keeps Exec successful, because the INSERT ran;
+// RowsAffected is correct and LastInsertId returns the cancellation (#87).
+func TestLastInsertIDLookupCanceled(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		affected int64
+		run      func(ctx context.Context, c *conn) (driver.Result, error)
+	}{
+		{name: "conn.ExecContext", affected: 1,
+			run: func(ctx context.Context, c *conn) (driver.Result, error) {
+				return c.ExecContext(ctx, "INSERT INTO t VALUES (1)", nil)
+			}},
+		{name: "stmt.ExecContext", affected: 1,
+			run: func(ctx context.Context, c *conn) (driver.Result, error) {
+				ds, err := c.Prepare("INSERT INTO t VALUES (1)")
+				if err != nil {
+					return nil, err
+				}
+				s := ds.(*stmt)
+				s.stmtType = StmtInsert // the fake CAS prepares every non-SELECT as an UPDATE
+				return s.ExecContext(ctx, nil)
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeCAS(t)
+			dc, err := (&Driver{}).Open(f.dsn())
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			c := dc.(*conn)
+			defer func() { _ = c.Close() }()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cancelOnFirst(f, FuncPrepareAndExecute, "LAST_INSERT_ID", cancel, true)
+
+			done := make(chan struct{})
+			var res driver.Result
+			go func() {
+				defer close(done)
+				res, err = tc.run(ctx, c)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not return within 1s of cancellation", tc.name)
+			}
+			if err != nil {
+				t.Fatalf("%s = %v, want success: the INSERT ran", tc.name, err)
+			}
+			if n, err := res.RowsAffected(); err != nil || n != tc.affected {
+				t.Fatalf("RowsAffected = %d, %v; want %d, nil", n, err, tc.affected)
+			}
+			if id, err := res.LastInsertId(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("LastInsertId = %d, %v; want context.Canceled", id, err)
+			}
+			if c.IsValid() {
+				t.Fatalf("IsValid reports the interrupted connection as valid")
+			}
+		})
 	}
 }
