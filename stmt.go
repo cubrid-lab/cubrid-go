@@ -1,9 +1,13 @@
 package cubrid
 
 import (
+	"context"
 	"database/sql/driver"
 	"errors"
 )
+
+var _ driver.StmtExecContext = (*stmt)(nil)
+var _ driver.StmtQueryContext = (*stmt)(nil)
 
 // stmt is a server-side prepared statement obtained via conn.Prepare().
 // It holds the query handle returned by FC=2 (PREPARE) and reuses it
@@ -89,7 +93,43 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	if s.closed || s.conn.closed {
 		return nil, driver.ErrBadConn
 	}
+	return s.execLocked(context.Background(), args)
+}
 
+// ExecContext implements driver.StmtExecContext. It is Exec bounded by ctx:
+// canceling ctx, or reaching its deadline, while a reply is outstanding
+// returns ctx's error, and the interrupted connection is retired (IsValid
+// reports false), as for conn.ExecContext.
+func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+
+	if s.closed || s.conn.closed {
+		return nil, driver.ErrBadConn
+	}
+	c := s.conn
+	if err := c.applyContextDeadline(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endRequest()
+	stopWatch := c.watchContextCancel(ctx)
+	defer stopWatch()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	values, err := namedValuesToValues(args)
+	if err != nil {
+		return nil, err
+	}
+	return s.execLocked(ctx, values)
+}
+
+// execLocked runs Exec. The caller holds conn.mu. If the main request fails
+// while ctx is done, it returns ctx's error; once the reply has arrived, the
+// request completed and its result is returned even if ctx ended meanwhile,
+// and the FC=41 handle is still closed.
+func (s *stmt) execLocked(ctx context.Context, args []driver.Value) (driver.Result, error) {
 	var res *ExecuteResult
 	var paeRes *PrepareAndExecuteResult
 
@@ -104,6 +144,9 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 		}
 		paeRes, err = s.conn.execSQL(interpolatedSQL)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, err
 		}
 		// FC=41 allocates a server-side query handle; close it immediately
@@ -121,6 +164,9 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 			return nil, driver.ErrBadConn
 		}
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, err
 		}
 		res, err = ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
@@ -131,8 +177,9 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 
 	// Retrieve last insert ID for INSERT statements.
 	var lastID int64
+	var lastIDErr error
 	if s.stmtType == StmtInsert {
-		lastID = s.conn.fetchLastInsertID()
+		lastID, lastIDErr = s.conn.fetchLastInsertID()
 	}
 
 	var affected int64
@@ -146,7 +193,7 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 		}
 	}
 
-	return &result{lastInsertID: lastID, rowsAffected: affected}, nil
+	return &result{lastInsertID: lastID, lastInsertIDErr: lastIDErr, rowsAffected: affected}, nil
 }
 
 // Query executes the statement and returns the result rows.
@@ -160,7 +207,43 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	if s.closed || s.conn.closed {
 		return nil, driver.ErrBadConn
 	}
+	return s.queryLocked(context.Background(), args)
+}
 
+// QueryContext implements driver.StmtQueryContext. It is Query bounded by
+// ctx: canceling ctx, or reaching its deadline, while the reply is
+// outstanding returns ctx's error, and the interrupted connection is retired
+// (IsValid reports false), as for conn.QueryContext. Fetching further rows
+// from the returned rows does not watch ctx.
+func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+
+	if s.closed || s.conn.closed {
+		return nil, driver.ErrBadConn
+	}
+	c := s.conn
+	if err := c.applyContextDeadline(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endRequest()
+	stopWatch := c.watchContextCancel(ctx)
+	defer stopWatch()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	values, err := namedValuesToValues(args)
+	if err != nil {
+		return nil, err
+	}
+	return s.queryLocked(ctx, values)
+}
+
+// queryLocked runs Query. The caller holds conn.mu. If the request fails
+// while ctx is done, it returns ctx's error; once the reply has arrived, the
+// rows are returned even if ctx ended meanwhile.
+func (s *stmt) queryLocked(ctx context.Context, args []driver.Value) (driver.Rows, error) {
 	var totalCount, tupleCount int
 	var fetchedRows [][]interface{}
 	var columns []ColumnMetaData
@@ -178,6 +261,9 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		}
 		paeRes, err := s.conn.execSQL(interpolatedSQL)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, err
 		}
 		totalCount = paeRes.TotalTupleCount
@@ -197,6 +283,9 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 			return nil, driver.ErrBadConn
 		}
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, err
 		}
 		res, err := ParseExecute(resp, s.columns, s.stmtType, s.conn.protoVer)
@@ -236,11 +325,14 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	return r, nil
 }
 
-// result implements driver.Result.
+// result implements driver.Result. lastInsertIDErr is set when the
+// LAST_INSERT_ID() lookup after an INSERT failed; the INSERT itself ran, so
+// Exec succeeds and only LastInsertId reports the error.
 type result struct {
-	lastInsertID int64
-	rowsAffected int64
+	lastInsertID    int64
+	lastInsertIDErr error
+	rowsAffected    int64
 }
 
-func (r *result) LastInsertId() (int64, error) { return r.lastInsertID, nil }
+func (r *result) LastInsertId() (int64, error) { return r.lastInsertID, r.lastInsertIDErr }
 func (r *result) RowsAffected() (int64, error) { return r.rowsAffected, nil }

@@ -663,8 +663,9 @@ func (l *lateCancelConn) SetDeadline(t time.Time) error {
 
 // TestLateCancelDoesNotLeakIntoNextRequest verifies that a cancellation
 // arriving after a request has finished its I/O does not affect the next
-// request on the same connection. The request returns context.Canceled, but
-// the connection stays usable, and a second request with a fresh context must
+// request on the same connection. The reply had arrived, so the request
+// returns its result rather than context.Canceled (#87), the connection stays
+// usable, and a second request with a fresh context must
 // succeed: the cancellation flag must be cleared and the watcher's expired
 // deadline must not survive into the next request. The subtests cover a next
 // request that probes the CAS first (reply OUT_TRAN) and one that writes at
@@ -697,6 +698,10 @@ func TestLateCancelDoesNotLeakIntoNextRequest(t *testing.T) {
 						reply = withStatus(prepareAndExecuteResponsePacket(StmtUpdate, 1, 1, 0))
 						if first {
 							first = false
+							// No query handle, so the request sends no
+							// CLOSE_REQ after this reply and the
+							// cancellation lands after all of its I/O.
+							binary.BigEndian.PutUint32(reply[SizeDataLength+SizeCASInfo:], 0)
 							cancel() // the reply is already on its way
 						}
 					}
@@ -709,8 +714,11 @@ func TestLateCancelDoesNotLeakIntoNextRequest(t *testing.T) {
 			c := &conn{socket: &lateCancelConn{Conn: client, cleared: make(chan struct{})},
 				autoCommit: true, protoVer: ProtoVersion}
 			c.casInfo[0] = 1 // the first request does not probe
-			if _, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil); !errors.Is(err, context.Canceled) {
-				t.Fatalf("first request: got %v, want context.Canceled", err)
+			if _, err := c.ExecContext(ctx, "UPDATE t SET v = 1", nil); err != nil {
+				t.Fatalf("first request: got %v, want its result: the reply arrived before the cancellation", err)
+			}
+			if ctx.Err() == nil {
+				t.Fatalf("the context was never canceled")
 			}
 			if c.closed {
 				t.Fatalf("a cancellation after the reply must not retire the connection")
