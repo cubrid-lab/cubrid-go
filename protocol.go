@@ -32,16 +32,37 @@ type ResultInfo struct {
 	OID         []byte
 }
 
+// Smallest wire size of one entry of each repeated reply section, used to
+// bound a server-sent count by the bytes that remain in the reply before
+// anything is allocated for it (see PacketReader.checkCount).
+const (
+	// type(1) scale(2) precision(4) name/real-name/table-name lengths(3*4)
+	// nullable(1) default length(4) seven flag bytes(7); the strings may be
+	// empty.
+	minColumnMetaSize = SizeByte + SizeShort + SizeInt + 3*SizeInt + SizeByte + SizeInt + 7*SizeByte
+	// stmt type(1) result count(4) OID(8) cache time(2*4).
+	minResultInfoSize = SizeByte + SizeInt + SizeOID + 2*SizeInt
+	// row index(4) OID(8); each column then adds at least its size(4).
+	minRowHeaderSize = SizeInt + SizeOID
+)
+
 // raiseError parses an error response body and returns an error value.
 func raiseError(reader *PacketReader, responseLength int) error {
 	code, msg := reader.readError(responseLength)
+	if reader.err != nil {
+		return reader.err
+	}
 	return newError(code, msg)
 }
 
-// parseColumnMetadata parses count column-metadata entries from reader.
+// parseColumnMetadata parses count column-metadata entries from reader. A
+// count that the remaining bytes cannot hold records reader.err and returns nil.
 func parseColumnMetadata(reader *PacketReader, count int) []ColumnMetaData {
+	if !reader.checkCount(count, minColumnMetaSize, "column count") {
+		return nil
+	}
 	cols := make([]ColumnMetaData, 0, count)
-	for i := 0; i < count; i++ {
+	for i := 0; i < count && reader.err == nil; i++ {
 		legacyType := int(reader.parseByte())
 		var colType int
 		if legacyType&0x80 != 0 {
@@ -88,10 +109,14 @@ func parseColumnMetadata(reader *PacketReader, count int) []ColumnMetaData {
 	return cols
 }
 
-// parseResultInfos parses count result-info entries from reader.
+// parseResultInfos parses count result-info entries from reader. A count
+// that the remaining bytes cannot hold records reader.err and returns nil.
 func parseResultInfos(reader *PacketReader, count int) []ResultInfo {
+	if !reader.checkCount(count, minResultInfoSize, "result-info count") {
+		return nil
+	}
 	infos := make([]ResultInfo, 0, count)
-	for i := 0; i < count; i++ {
+	for i := 0; i < count && reader.err == nil; i++ {
 		stmtType := int(reader.parseByte())
 		resultCount := int(reader.parseInt())
 		oid := reader.parseRawBytes(SizeOID)
@@ -143,7 +168,9 @@ func readValue(reader *PacketReader, colType int, size int) interface{} {
 	}
 }
 
-// parseRowData parses tupleCount rows from reader.
+// parseRowData parses tupleCount rows from reader. A tuple count that the
+// remaining bytes cannot hold, or a value size larger than the bytes left,
+// records reader.err and returns nil.
 func parseRowData(
 	reader *PacketReader,
 	tupleCount int,
@@ -151,8 +178,11 @@ func parseRowData(
 	stmtType int,
 ) [][]interface{} {
 	isCallType := stmtType == StmtCallSP
+	if !reader.checkCount(tupleCount, minRowHeaderSize+SizeInt*len(columns), "tuple count") {
+		return nil
+	}
 	rows := make([][]interface{}, 0, tupleCount)
-	for i := 0; i < tupleCount; i++ {
+	for i := 0; i < tupleCount && reader.err == nil; i++ {
 		reader.parseInt()             // row index
 		reader.parseRawBytes(SizeOID) // OID
 
@@ -225,14 +255,20 @@ func ParseOpenDatabase(data []byte) (*OpenDatabaseResult, error) {
 	copy(casInfo[:], reader.parseRawBytes(SizeCASInfo))
 
 	responseCode := reader.parseInt()
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	if responseCode < 0 {
 		remaining := len(data) - SizeCASInfo - SizeInt
 		return nil, raiseError(reader, remaining)
 	}
 
 	brokerBytes := reader.parseRawBytes(SizeBrokerInfo)
-	protoVersion := int(brokerBytes[4]) & 0x3F
 	sessionID := int(reader.parseInt())
+	if reader.err != nil {
+		return nil, reader.err
+	}
+	protoVersion := int(brokerBytes[4]) & 0x3F
 
 	return &OpenDatabaseResult{
 		CASInfo:         casInfo,
@@ -265,6 +301,9 @@ func ParseSimpleResponse(data []byte) error {
 	reader := newPacketReader(data)
 	reader.parseRawBytes(SizeCASInfo)
 	code := reader.parseInt()
+	if reader.err != nil {
+		return reader.err
+	}
 	if code < 0 {
 		return raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
@@ -315,6 +354,9 @@ func ParsePrepareAndExecute(data []byte, protoVersion int) (*PrepareAndExecuteRe
 	reader.parseRawBytes(SizeCASInfo)
 
 	responseCode := reader.parseInt()
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	if responseCode < 0 {
 		return nil, raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
@@ -342,9 +384,14 @@ func ParsePrepareAndExecute(data []byte, protoVersion int) (*PrepareAndExecuteRe
 	if res.StatementType == StmtSelect && reader.bytesRemaining() >= SizeInt*2 {
 		reader.parseInt() // fetch_code
 		res.TupleCount = int(reader.parseInt())
-		if res.TupleCount > 0 {
+		if res.TupleCount < 0 {
+			reader.fail("negative tuple count %d", res.TupleCount)
+		} else if res.TupleCount > 0 {
 			res.Rows = parseRowData(reader, res.TupleCount, res.Columns, res.StatementType)
 		}
+	}
+	if reader.err != nil {
+		return nil, reader.err
 	}
 
 	return res, nil
@@ -376,13 +423,23 @@ func ParseFetch(data []byte, columns []ColumnMetaData, stmtType int) (*FetchResu
 	reader := newPacketReader(data)
 	reader.parseRawBytes(SizeCASInfo)
 	responseCode := reader.parseInt()
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	if responseCode < 0 {
 		return nil, raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
 	res := &FetchResult{}
 	res.TupleCount = int(reader.parseInt())
-	if res.TupleCount > 0 && len(columns) > 0 {
+	if res.TupleCount < 0 {
+		reader.fail("negative tuple count %d", res.TupleCount)
+	} else if res.TupleCount > 0 {
+		// Parsed even without columns: rows.Next serves the first of
+		// TupleCount rows, so they must all be here.
 		res.Rows = parseRowData(reader, res.TupleCount, columns, stmtType)
+	}
+	if reader.err != nil {
+		return nil, reader.err
 	}
 	return res, nil
 }
@@ -418,11 +475,18 @@ func ParseGetDbVersion(data []byte) (string, error) {
 	reader := newPacketReader(data)
 	reader.parseRawBytes(SizeCASInfo)
 	code := reader.parseInt()
+	if reader.err != nil {
+		return "", reader.err
+	}
 	if code < 0 {
 		return "", raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
 	versionLen := len(data) - SizeCASInfo - SizeInt
-	return reader.parseNullTermString(versionLen), nil
+	version := reader.parseNullTermString(versionLen)
+	if reader.err != nil {
+		return "", reader.err
+	}
+	return version, nil
 }
 
 // ─── Check CAS (FC=32) ───────────────────────────────────────────────────────
@@ -459,11 +523,18 @@ func ParseGetLastInsertId(data []byte) (string, error) {
 	reader := newPacketReader(data)
 	reader.parseRawBytes(SizeCASInfo)
 	code := reader.parseInt()
+	if reader.err != nil {
+		return "", reader.err
+	}
 	if code < 0 {
 		return "", raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
 	if code > 0 {
-		return reader.parseNullTermString(int(code)), nil
+		id := reader.parseNullTermString(int(code))
+		if reader.err != nil {
+			return "", reader.err
+		}
+		return id, nil
 	}
 	return "", nil
 }
@@ -500,6 +571,9 @@ func ParsePrepare(data []byte) (*PrepareResult, error) {
 	reader.parseRawBytes(SizeCASInfo)
 
 	responseCode := reader.parseInt()
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	if responseCode < 0 {
 		return nil, raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
@@ -511,6 +585,9 @@ func ParsePrepare(data []byte) (*PrepareResult, error) {
 	reader.parseByte()                          // is_updatable
 	colCount := int(reader.parseInt())
 	res.Columns = parseColumnMetadata(reader, colCount)
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	return res, nil
 }
 
@@ -581,6 +658,9 @@ func ParseExecute(
 	reader.parseRawBytes(SizeCASInfo)
 
 	responseCode := reader.parseInt()
+	if reader.err != nil {
+		return nil, reader.err
+	}
 	if responseCode < 0 {
 		return nil, raiseError(reader, len(data)-SizeCASInfo-SizeInt)
 	}
@@ -600,9 +680,14 @@ func ParseExecute(
 	if stmtType == StmtSelect && reader.bytesRemaining() >= SizeInt*2 {
 		reader.parseInt() // fetch_code
 		res.TupleCount = int(reader.parseInt())
-		if res.TupleCount > 0 && len(columns) > 0 {
+		if res.TupleCount < 0 {
+			reader.fail("negative tuple count %d", res.TupleCount)
+		} else if res.TupleCount > 0 && len(columns) > 0 {
 			res.Rows = parseRowData(reader, res.TupleCount, columns, stmtType)
 		}
+	}
+	if reader.err != nil {
+		return nil, reader.err
 	}
 
 	return res, nil

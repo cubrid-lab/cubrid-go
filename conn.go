@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,22 +202,68 @@ func (c *conn) send(data []byte) error {
 	return err
 }
 
+// maxResponseLength is the largest reply body a DATA_LENGTH header may
+// declare. The CAS writes DATA_LENGTH as a signed 32-bit INT (as the request
+// side does, see maxRequestPayload), so a larger value is not a length a CAS
+// can send. It is a variable only so tests can lower it; production never
+// changes it.
+var maxResponseLength int64 = math.MaxInt32
+
+// recvChunk is the most recv allocates ahead of the bytes it has received.
+// A reply up to this size is read into one exact buffer, as before; a larger
+// one grows as its bytes arrive, so a DATA_LENGTH that the peer never sends
+// cannot make recv allocate it.
+const recvChunk = 1 << 20
+
 // recv reads a length-framed response: 4-byte DATA_LENGTH, then CAS_INFO + body.
+// A DATA_LENGTH above maxResponseLength is rejected before anything is
+// allocated for it.
 func (c *conn) recv() ([]byte, error) {
 	lenBuf := make([]byte, SizeDataLength)
 	if _, err := io.ReadFull(c.socket, lenBuf); err != nil {
 		return nil, err
 	}
-	dataLen := int(binary.BigEndian.Uint32(lenBuf))
+	dataLen := binary.BigEndian.Uint32(lenBuf)
+	// The second bound only matters where int is 32 bits wide.
+	if int64(dataLen) > maxResponseLength || int64(dataLen) > int64(math.MaxInt)-SizeCASInfo {
+		return nil, fmt.Errorf("%w: DATA_LENGTH %d exceeds the maximum response size of %d bytes",
+			errMalformedReply, dataLen, maxResponseLength)
+	}
 
 	// CUBRID wire: [DATA_LENGTH][CAS_INFO (4 bytes)][body (DATA_LENGTH bytes)]
 	// Read CAS_INFO + body together.
-	totalLen := dataLen + SizeCASInfo
-	data := make([]byte, totalLen)
-	if _, err := io.ReadFull(c.socket, data); err != nil {
-		return nil, err
+	totalLen := int(dataLen) + SizeCASInfo
+	if totalLen <= recvChunk {
+		data := make([]byte, totalLen)
+		if _, err := io.ReadFull(c.socket, data); err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+	data := make([]byte, 0, recvChunk)
+	for len(data) < totalLen {
+		n := min(totalLen-len(data), recvChunk)
+		data = slices.Grow(data, n)
+		read, err := io.ReadFull(c.socket, data[len(data):len(data)+n])
+		data = data[:len(data)+read]
+		if err != nil {
+			return nil, err
+		}
 	}
 	return data, nil
+}
+
+// replyErr retires the connection when err reports a malformed reply (see
+// errMalformedReply) and returns err. The reply was read in full, but a CAS
+// that sends lengths or counts its reply cannot hold is in an unknown state,
+// and the outcome of the request is unknown, so the session must not be
+// reused; as for a lost reply, the error is not driver.ErrBadConn. The
+// caller holds c.mu.
+func (c *conn) replyErr(err error) error {
+	if errors.Is(err, errMalformedReply) {
+		c.retireTransport()
+	}
+	return err
 }
 
 // sendAndRecv sends data and returns the framed response.
@@ -471,7 +519,7 @@ func (c *conn) closeQueryHandle(qh int, gen uint64) {
 	if err != nil {
 		return // best-effort: ignore stale handles and network errors
 	}
-	_ = ParseSimpleResponse(resp)
+	_ = c.replyErr(ParseSimpleResponse(resp))
 }
 
 // execSQL runs a complete SQL string via PrepareAndExecute (FC=41).
@@ -482,7 +530,11 @@ func (c *conn) execSQL(sql string) (*PrepareAndExecuteResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParsePrepareAndExecute(resp, c.protoVer)
+	res, err := ParsePrepareAndExecute(resp, c.protoVer)
+	if err != nil {
+		return nil, c.replyErr(err)
+	}
+	return res, nil
 }
 
 // ensureStringEscapeModeLocked negotiates the server's no_backslash_escapes
@@ -663,7 +715,7 @@ func (c *conn) prepareLocked(query string) (driver.Stmt, error) {
 	}
 	res, err := ParsePrepare(resp)
 	if err != nil {
-		return nil, err
+		return nil, c.replyErr(err)
 	}
 
 	return &stmt{
@@ -769,6 +821,12 @@ func (c *conn) Ping(ctx context.Context) error {
 		return fmt.Errorf("%w: cubrid ping: %v", driver.ErrBadConn, err)
 	}
 	_, err = ParseGetDbVersion(resp)
+	if errors.Is(err, errMalformedReply) {
+		// The session cannot be used; GET_DB_VERSION changed nothing, so
+		// ErrBadConn is safe here as for a lost reply (see above).
+		c.retireTransport()
+		return fmt.Errorf("%w: cubrid ping: %v", driver.ErrBadConn, err)
+	}
 	return err
 }
 
@@ -919,5 +977,6 @@ func (c *conn) ServerVersion() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ParseGetDbVersion(resp)
+	version, err := ParseGetDbVersion(resp)
+	return version, c.replyErr(err)
 }

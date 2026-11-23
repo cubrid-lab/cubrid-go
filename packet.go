@@ -200,57 +200,129 @@ func (w *PacketWriter) addCacheTime() {
 func (w *PacketWriter) toBytes() []byte { return w.buf }
 func (w *PacketWriter) Len() int        { return len(w.buf) }
 
+// errMalformedReply is wrapped by every error that reports a CAS reply whose
+// lengths or counts do not fit the reply (see PacketReader). Such a reply
+// leaves the session in an unknown state, so the conn that received it is
+// retired (see conn.replyErr). errors.As still finds *OperationalError.
+var errMalformedReply error = &OperationalError{CubridError{Code: -1, Message: "malformed CAS reply"}}
+
 // PacketReader deserializes big-endian binary data,
 // mirroring pycubrid's PacketReader class.
+//
+// Every read is checked against the bytes remaining in the reply. The first
+// read that does not fit records err (wrapping errMalformedReply) and every
+// later read returns a zero value, so parsers check err once before they use
+// what they read, instead of after each field. Nothing is allocated for a
+// length or count before it has been checked.
 type PacketReader struct {
 	buf    []byte
 	offset int
+	err    error
 }
 
 func newPacketReader(data []byte) *PacketReader {
 	return &PacketReader{buf: data}
 }
 
-func (r *PacketReader) parseByte() byte {
-	v := r.buf[r.offset]
-	r.offset += SizeByte
+// fail records the first malformed-reply error.
+func (r *PacketReader) fail(format string, args ...interface{}) {
+	if r.err == nil {
+		r.err = fmt.Errorf("%w: %s", errMalformedReply, fmt.Sprintf(format, args...))
+	}
+}
+
+// take returns the next n bytes of the reply, without copying, or nil when n
+// is negative or exceeds the bytes remaining (and records the error).
+func (r *PacketReader) take(n int) []byte {
+	if r.err != nil {
+		return nil
+	}
+	if n < 0 {
+		r.fail("negative length %d at offset %d", n, r.offset)
+		return nil
+	}
+	if n > r.bytesRemaining() {
+		r.fail("length %d at offset %d exceeds the %d bytes remaining", n, r.offset, r.bytesRemaining())
+		return nil
+	}
+	v := r.buf[r.offset : r.offset+n : r.offset+n]
+	r.offset += n
 	return v
+}
+
+// checkCount reports whether count entries of at least minSize bytes each
+// can fit in the bytes remaining, and records the error when they cannot. A
+// count that passes cannot make a parser allocate more than a small multiple
+// of the reply's own size.
+func (r *PacketReader) checkCount(count, minSize int, what string) bool {
+	if r.err != nil {
+		return false
+	}
+	if count < 0 || count > r.bytesRemaining()/minSize {
+		r.fail("%s %d at offset %d does not fit the %d bytes remaining (each needs at least %d bytes)",
+			what, count, r.offset, r.bytesRemaining(), minSize)
+		return false
+	}
+	return true
+}
+
+func (r *PacketReader) parseByte() byte {
+	b := r.take(SizeByte)
+	if b == nil {
+		return 0
+	}
+	return b[0]
 }
 
 func (r *PacketReader) parseShort() int16 {
-	v := int16(binary.BigEndian.Uint16(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS SHORT (two's complement)
-	r.offset += SizeShort
-	return v
+	b := r.take(SizeShort)
+	if b == nil {
+		return 0
+	}
+	return int16(binary.BigEndian.Uint16(b)) // #nosec G115 -- bit-preserving decode of a signed CAS SHORT (two's complement)
 }
 
 func (r *PacketReader) parseInt() int32 {
-	v := int32(binary.BigEndian.Uint32(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS INT (two's complement)
-	r.offset += SizeInt
-	return v
+	b := r.take(SizeInt)
+	if b == nil {
+		return 0
+	}
+	return int32(binary.BigEndian.Uint32(b)) // #nosec G115 -- bit-preserving decode of a signed CAS INT (two's complement)
 }
 
 func (r *PacketReader) parseLong() int64 {
-	v := int64(binary.BigEndian.Uint64(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS BIGINT (two's complement)
-	r.offset += SizeLong
-	return v
+	b := r.take(SizeLong)
+	if b == nil {
+		return 0
+	}
+	return int64(binary.BigEndian.Uint64(b)) // #nosec G115 -- bit-preserving decode of a signed CAS BIGINT (two's complement)
 }
 
 func (r *PacketReader) parseFloat() float32 {
-	v := math.Float32frombits(binary.BigEndian.Uint32(r.buf[r.offset:]))
-	r.offset += SizeFloat
-	return v
+	b := r.take(SizeFloat)
+	if b == nil {
+		return 0
+	}
+	return math.Float32frombits(binary.BigEndian.Uint32(b))
 }
 
 func (r *PacketReader) parseDouble() float64 {
-	v := math.Float64frombits(binary.BigEndian.Uint64(r.buf[r.offset:]))
-	r.offset += SizeDouble
-	return v
+	b := r.take(SizeDouble)
+	if b == nil {
+		return 0
+	}
+	return math.Float64frombits(binary.BigEndian.Uint64(b))
 }
 
+// parseRawBytes returns a copy of the next count bytes, or nil when count is
+// negative or exceeds the bytes remaining (see take).
 func (r *PacketReader) parseRawBytes(count int) []byte {
-	v := make([]byte, count)
-	copy(v, r.buf[r.offset:r.offset+count])
-	r.offset += count
+	b := r.take(count)
+	if b == nil {
+		return nil
+	}
+	v := make([]byte, len(b))
+	copy(v, b)
 	return v
 }
 
