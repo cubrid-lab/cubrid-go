@@ -2,6 +2,7 @@ package cubrid
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
 	"errors"
@@ -313,5 +314,202 @@ func TestQueryContextCancellationInterruptsInflightOperation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("QueryContext did not return after cancellation")
+	}
+}
+
+// TestPreparedPathsHonorContextCancellation checks the context-aware prepare
+// and prepared-statement paths (#87): canceling the context while the CAS
+// holds the reply returns context.Canceled within a second, and the
+// interrupted connection is retired. database/sql then closes it instead of
+// returning it to the pool, so the following ping, which database/sql does
+// not retry, runs on a new session.
+func TestPreparedPathsHonorContextCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// prepare is the statement prepared before the hold, or "" for none.
+		prepare string
+		hold    byte
+		run     func(ctx context.Context, db *sql.DB, st *sql.Stmt) error
+	}{
+		{name: "PrepareContext", hold: FuncPrepare,
+			run: func(ctx context.Context, db *sql.DB, _ *sql.Stmt) error {
+				st, err := db.PrepareContext(ctx, "SELECT v FROM t")
+				if err == nil {
+					_ = st.Close()
+				}
+				return err
+			}},
+		{name: "Stmt.ExecContext", prepare: "UPDATE t SET v = 1", hold: FuncExecute,
+			run: func(ctx context.Context, _ *sql.DB, st *sql.Stmt) error {
+				_, err := st.ExecContext(ctx)
+				return err
+			}},
+		{name: "Stmt.QueryContext", prepare: "SELECT v FROM t", hold: FuncExecute,
+			run: func(ctx context.Context, _ *sql.DB, st *sql.Stmt) error {
+				rows, err := st.QueryContext(ctx)
+				if err == nil {
+					_ = rows.Close()
+				}
+				return err
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeCAS(t)
+			db, err := sql.Open("cubrid", f.dsn())
+			if err != nil {
+				t.Fatalf("sql.Open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			db.SetMaxOpenConns(1)
+			if err := db.Ping(); err != nil {
+				t.Fatalf("first Ping: %v", err)
+			}
+			var st *sql.Stmt
+			if tc.prepare != "" {
+				if st, err = db.Prepare(tc.prepare); err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				defer func() { _ = st.Close() }()
+			}
+			arrived := holdFirst(t, f, tc.hold)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- tc.run(ctx, db, st) }()
+			select {
+			case <-arrived:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("the request never reached the CAS")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s = %v, want context.Canceled", tc.name, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not return within 1s of cancellation", tc.name)
+			}
+
+			if err := db.Ping(); err != nil {
+				t.Fatalf("Ping after the canceled request: %v", err)
+			}
+			pingSessionLog(t, f, "s2", "s2 GET_DB_VERSION")
+		})
+	}
+}
+
+// TestPreparedPathsRetireConnOnCancel drives the driver directly: after a
+// canceled in-flight PrepareContext, stmt.ExecContext or stmt.QueryContext,
+// IsValid reports false and the next request returns driver.ErrBadConn
+// without sending anything.
+func TestPreparedPathsRetireConnOnCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare string
+		hold    byte
+		run     func(ctx context.Context, c *conn, s *stmt) error
+	}{
+		{name: "PrepareContext", hold: FuncPrepare,
+			run: func(ctx context.Context, c *conn, _ *stmt) error {
+				_, err := c.PrepareContext(ctx, "SELECT v FROM t")
+				return err
+			}},
+		{name: "stmt.ExecContext", prepare: "UPDATE t SET v = 1", hold: FuncExecute,
+			run: func(ctx context.Context, _ *conn, s *stmt) error {
+				_, err := s.ExecContext(ctx, nil)
+				return err
+			}},
+		{name: "stmt.QueryContext", prepare: "SELECT v FROM t", hold: FuncExecute,
+			run: func(ctx context.Context, _ *conn, s *stmt) error {
+				_, err := s.QueryContext(ctx, nil)
+				return err
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeCAS(t)
+			dc, err := (&Driver{}).Open(f.dsn())
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			c := dc.(*conn)
+			defer func() { _ = c.Close() }()
+			var s *stmt
+			if tc.prepare != "" {
+				ds, err := c.Prepare(tc.prepare)
+				if err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				s = ds.(*stmt)
+			}
+			arrived := holdFirst(t, f, tc.hold)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- tc.run(ctx, c, s) }()
+			select {
+			case <-arrived:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("the request never reached the CAS")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s = %v, want context.Canceled", tc.name, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not return within 1s of cancellation", tc.name)
+			}
+
+			if c.IsValid() {
+				t.Fatalf("IsValid reports the interrupted connection as valid")
+			}
+			before := len(f.entries())
+			if _, err := c.PrepareContext(context.Background(), "SELECT v FROM t"); !errors.Is(err, driver.ErrBadConn) {
+				t.Fatalf("next request = %v, want driver.ErrBadConn", err)
+			}
+			if got := f.entries(); len(got) != before {
+				t.Fatalf("the retired connection sent %q", got[before:])
+			}
+		})
+	}
+}
+
+// TestPreparedPathsAlreadyCanceledSendNothing: an already canceled context
+// returns its error before anything is sent, and leaves the connection usable.
+func TestPreparedPathsAlreadyCanceledSendNothing(t *testing.T) {
+	f := newFakeCAS(t)
+	dc, err := (&Driver{}).Open(f.dsn())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c := dc.(*conn)
+	defer func() { _ = c.Close() }()
+	ds, err := c.Prepare("SELECT v FROM t")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	s := ds.(*stmt)
+	before := len(f.entries())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.PrepareContext(ctx, "SELECT v FROM t"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PrepareContext = %v, want context.Canceled", err)
+	}
+	if _, err := s.ExecContext(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stmt.ExecContext = %v, want context.Canceled", err)
+	}
+	if _, err := s.QueryContext(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stmt.QueryContext = %v, want context.Canceled", err)
+	}
+	if got := f.entries(); len(got) != before {
+		t.Fatalf("canceled calls sent %q", got[before:])
+	}
+	if !c.IsValid() {
+		t.Fatalf("IsValid = false after calls that sent nothing")
 	}
 }

@@ -115,7 +115,8 @@ cubrid-go implements the standard `database/sql/driver` interfaces:
 | `driver.Result` | `result` | LastInsertId + RowsAffected |
 | `driver.Pinger` | `conn` | Connection health check |
 | `driver.Validator` | `conn` | Keeps a connection retired by an interrupted request out of the pool |
-| `driver.QueryerContext`, `driver.ExecerContext`, `driver.ConnBeginTx` | `conn` | Context-aware query, exec and begin |
+| `driver.QueryerContext`, `driver.ExecerContext`, `driver.ConnBeginTx`, `driver.ConnPrepareContext` | `conn` | Context-aware query, exec, begin and prepare |
+| `driver.StmtExecContext`, `driver.StmtQueryContext` | `stmt` | Context-aware execution of a prepared statement |
 
 ### sql.Open
 

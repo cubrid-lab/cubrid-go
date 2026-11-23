@@ -51,8 +51,8 @@ holds it for every call into the driver for that connection:
 
 | `database/sql` operation | Driver call | Lock held by `database/sql` |
 |:--|:--|:--|
-| `Query`, `Exec`, `Begin`, `Prepare` (on `DB`, `Conn` or `Tx`) | `conn.QueryContext`, `ExecContext`, `BeginTx`, `Prepare` | connection lock |
-| `Stmt.Query`, `Stmt.Exec` | `stmt.Query`, `stmt.Exec` | statement lock, which is the connection lock |
+| `Query`, `Exec`, `Begin`, `Prepare` (on `DB`, `Conn` or `Tx`) | `conn.QueryContext`, `ExecContext`, `BeginTx`, `PrepareContext` | connection lock |
+| `Stmt.Query`, `Stmt.Exec` | `stmt.QueryContext`, `stmt.ExecContext` | statement lock, which is the connection lock |
 | `Rows.Next` | `rows.Next` | connection lock |
 | `Rows.Close`, including the close `database/sql` runs on its own goroutine when the query's context is canceled | `rows.Close` | connection lock, after any running `Rows.Next` returns |
 | `Stmt.Close` of a statement prepared on a `Tx` or `Conn` | `stmt.Close` | statement lock, which is the connection lock |
@@ -76,8 +76,8 @@ the reply. Every path that can send a request or reconnect holds it:
 |:--|:--|:--|:--|
 | `conn.QueryContext`, `conn.ExecContext` (including the escaping-mode probe, `LAST_INSERT_ID()` lookup and handle cleanup inside them) | yes | yes | yes |
 | `conn.Ping` | yes | yes | yes |
-| `conn.Prepare`, `conn.ServerVersion` | yes | yes | no |
-| `stmt.Exec`, `stmt.Query`, `stmt.Close` | yes | yes | no |
+| `conn.PrepareContext`, `stmt.ExecContext`, `stmt.QueryContext` (including the escaping-mode probe, `LAST_INSERT_ID()` lookup and handle cleanup inside them) | yes | yes | yes |
+| `conn.Prepare`, `stmt.Exec`, `stmt.Query` (context-free forms, which `database/sql` does not call), `conn.ServerVersion`, `stmt.Close` | yes | yes | no |
 | `rows.Next` (when it fetches more rows), `rows.Close` (when the rows own their handle), and either of them when it sends a closed statement's deferred `CLOSE_REQ` | yes | yes | no |
 | `tx.Commit`, `tx.Rollback` | yes | yes | no |
 | `conn.Begin`, `conn.BeginTx` | no (nothing is sent) | yes | no |
@@ -94,7 +94,7 @@ the reply. Every path that can send a request or reconnect holds it:
 | `closed` | `Close`, `retireTransport`, an interrupted probe | `conn.mu`, or before `Driver.Open` returns the connection (`retireTransport` on a failed handshake) |
 | `autoCommit` | `Begin`, `BeginTx`, `Commit`, `Rollback` | `conn.mu` |
 | `protoVer`, `stringEscapeMode` | `connect`, first parameterized execution | `conn.mu` |
-| `reqCtx`, `reqDeadline` (running request) | start and end of `QueryContext`, `ExecContext`, `BeginTx`, `Ping` | `conn.mu` |
+| `reqCtx`, `reqDeadline` (running request) | start and end of `QueryContext`, `ExecContext`, `PrepareContext`, `stmt.ExecContext`, `stmt.QueryContext`, `BeginTx`, `Ping` | `conn.mu` |
 | `canceled` (sticky cancellation of the running request) | cancel watcher; cleared when the watcher stops | atomic |
 | host, port, credentials, `timeout` | `Driver.Open` | not changed after `Open` |
 | `stmt.closed`, `stmt.queryHandle`, `stmt.openRows` (rows that may still fetch with the statement's handle) | `stmt.Close`, `stmt.Query`, and `rows.Next`/`rows.Close` when they stop using the handle | `conn.mu` |
@@ -103,7 +103,8 @@ the reply. Every path that can send a request or reconnect holds it:
 
 ### The cancel watcher
 
-`QueryContext`, `ExecContext` and `Ping` start a goroutine that waits for the
+`QueryContext`, `ExecContext`, `Ping`, `PrepareContext` and the statement's
+`ExecContext` and `QueryContext` start a goroutine that waits for the
 request's context. When the context is done it sets `canceled`, reads the
 current socket under `sockMu` and expires its deadline, which makes the
 blocked `Read` or `Write` return. A reconnect may replace the socket, or leave
@@ -155,9 +156,12 @@ own rows.
 These are not data races, but they affect what a concurrent application can
 expect:
 
-- Only `QueryContext`, `ExecContext` and `Ping` watch their context.
-  Preparing a statement, running a prepared statement, fetching more rows,
-  `Commit` and `Rollback` have no deadline of their own: the `timeout` DSN
+- Querying, executing, pinging, preparing a statement and running a
+  prepared statement watch their context: canceling it, or reaching its
+  deadline, while the reply is outstanding returns the context's error and
+  retires the connection, which `database/sql` then closes instead of
+  reusing. Fetching more rows (`Rows.Next`), `Commit` and `Rollback` take no
+  context and have no deadline of their own: the `timeout` DSN
   option bounds only a reconnect handshake and the `CHECK_CAS` probe before
   them. A CAS that stops answering mid-request can block them, holding their
   connection, and canceling the context passed to `database/sql` does not
@@ -199,6 +203,14 @@ Run with `go test -race`:
   deadline passes, and a dead connection returns `driver.ErrBadConn` and is
   discarded from the pool; a connection retired by a canceled ping or query
   is not reused (`driver.Validator`) (#88).
+- `TestPreparedPathsHonorContextCancellation`,
+  `TestPreparedPathsRetireConnOnCancel` and
+  `TestPreparedPathsAlreadyCanceledSendNothing` in `context_test.go`:
+  `PrepareContext`, `Stmt.ExecContext` and `Stmt.QueryContext` return
+  `context.Canceled` within a second when the CAS holds the reply, the
+  interrupted connection is retired (`IsValid` is false, the next request
+  returns `driver.ErrBadConn` without sending) and not reused by the pool,
+  and an already canceled context sends nothing (#87).
 - `TestCancelWatcherSkipsSocketClearedByReconnect`,
   `TestLateCancelDoesNotLeakIntoNextRequest`, `TestCancelDuringReconnectDial`
   and the stale-handle tests in `stale_handle_test.go` cover the cancel

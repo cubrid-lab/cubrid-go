@@ -19,7 +19,8 @@ const defaultFetchSize = 100
 
 // conn is a single TCP connection to the CUBRID CAS broker.
 // It implements driver.Conn, driver.Pinger, driver.Validator,
-// driver.ConnBeginTx, driver.QueryerContext and driver.ExecerContext.
+// driver.ConnBeginTx, driver.ConnPrepareContext, driver.QueryerContext and
+// driver.ExecerContext.
 type conn struct {
 	mu         sync.Mutex
 	socket     net.Conn
@@ -39,7 +40,8 @@ type conn struct {
 	// unknown on every (re)connect. All access is guarded by mu.
 	stringEscapeMode StringEscapeMode
 	// reqCtx and reqDeadline hold the context and deadline of the running
-	// QueryContext/ExecContext/BeginTx call (set by applyContextDeadline,
+	// context-aware call (QueryContext, ExecContext, PrepareContext,
+	// stmt.ExecContext/QueryContext, BeginTx, Ping) (set by applyContextDeadline,
 	// cleared by endRequest) so checkReconnect can honor them.
 	reqCtx      context.Context
 	reqDeadline time.Time
@@ -69,6 +71,7 @@ var errStaleHandle = errors.New("cubrid: server handle belongs to an earlier phy
 
 var _ driver.QueryerContext = (*conn)(nil)
 var _ driver.ExecerContext = (*conn)(nil)
+var _ driver.ConnPrepareContext = (*conn)(nil)
 var _ driver.ConnBeginTx = (*conn)(nil)
 var _ driver.Pinger = (*conn)(nil)
 var _ driver.Validator = (*conn)(nil)
@@ -608,7 +611,42 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	if c.closed {
 		return nil, driver.ErrBadConn
 	}
+	return c.prepareLocked(query)
+}
 
+// PrepareContext implements driver.ConnPrepareContext. It is Prepare bounded
+// by ctx: canceling ctx, or reaching its deadline, while the PREPARE reply is
+// outstanding returns ctx's error, and the interrupted connection is retired
+// (IsValid reports false), as for QueryContext.
+func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
+	if err := c.applyContextDeadline(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endRequest()
+	stopWatch := c.watchContextCancel(ctx)
+	defer stopWatch()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s, err := c.prepareLocked(query)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, err
+	}
+	return s, nil
+}
+
+// prepareLocked sends PREPARE (FC=2) for query. The caller holds c.mu.
+func (c *conn) prepareLocked(query string) (driver.Stmt, error) {
 	req := WritePrepare(query, c.autoCommit, c.casInfo)
 	resp, err := c.sendAndRecv(req)
 	if err != nil {
