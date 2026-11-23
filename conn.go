@@ -115,7 +115,7 @@ func (c *conn) connect() error {
 		_ = brokerConn.Close()
 		return err
 	}
-	newPort := int(int32(binary.BigEndian.Uint32(portBuf)))
+	newPort := int(int32(binary.BigEndian.Uint32(portBuf))) // #nosec G115 -- the broker reply is a signed INT (two's complement); negative values are broker error codes handled below
 	if newPort < 0 {
 		_ = brokerConn.Close()
 		return &OperationalError{CubridError{Code: newPort,
@@ -263,6 +263,9 @@ func (c *conn) retireTransport() {
 // After any request bytes were accepted, the CAS might have executed the SQL,
 // even if the reply was lost; returning ErrBadConn could duplicate a write.
 func (c *conn) roundTrip(data []byte) ([]byte, error) {
+	if err := checkRequestLength(int64(len(data))); err != nil {
+		return nil, err
+	}
 	written, writeErr := c.socket.Write(data)
 	if writeErr == nil && written != len(data) {
 		writeErr = io.ErrShortWrite

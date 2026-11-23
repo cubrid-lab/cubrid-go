@@ -193,7 +193,7 @@ func WriteClientInfoExchange() []byte {
 
 // ParseClientInfoExchange parses the 4-byte handshake response.
 func ParseClientInfoExchange(data []byte) int {
-	return int(int32(binary.BigEndian.Uint32(data[:4])))
+	return int(int32(binary.BigEndian.Uint32(data[:4]))) // #nosec G115 -- the broker reply is a signed INT (two's complement); negative values are broker error codes
 }
 
 // ─── Open / Close Database ────────────────────────────────────────────────────
@@ -356,11 +356,11 @@ func ParsePrepareAndExecute(data []byte, protoVersion int) (*PrepareAndExecuteRe
 func WriteFetch(queryHandle, currentTupleCount, fetchSize int, casInfo [SizeCASInfo]byte) []byte {
 	w := newPacketWriter()
 	w.writeByte(FuncFetch)
-	w.addInt(int32(queryHandle))
-	w.addInt(int32(currentTupleCount + 1))
-	w.addInt(int32(fetchSize))
-	w.addByte(0) // case_sensitive
-	w.addInt(0)  // resultset_index
+	w.addInt(int32(queryHandle))           // #nosec G115 -- query handles are issued by the CAS as signed INTs (parsed with parseInt), so they fit int32
+	w.addInt(int32(currentTupleCount + 1)) // #nosec G115 -- rows.fetch only runs while fetchedCount < totalCount, and totalCount is a CAS INT, so the cursor position fits int32
+	w.addInt(int32(fetchSize))             // #nosec G115 -- internal callers pass defaultFetchSize (a small constant); external callers of the exported WriteFetch own this value
+	w.addByte(0)                           // case_sensitive
+	w.addInt(0)                            // resultset_index
 	payload := w.toBytes()
 	return append(buildProtocolHeader(len(payload), casInfo), payload...)
 }
@@ -393,7 +393,7 @@ func ParseFetch(data []byte, columns []ColumnMetaData, stmtType int) (*FetchResu
 func WriteCloseReqHandle(queryHandle int, casInfo [SizeCASInfo]byte) []byte {
 	w := newPacketWriter()
 	w.writeByte(FuncCloseReqHandle)
-	w.addInt(int32(queryHandle))
+	w.addInt(int32(queryHandle)) // #nosec G115 -- query handles are issued by the CAS as signed INTs (parsed with parseInt), so they fit int32
 	payload := w.toBytes()
 	return append(buildProtocolHeader(len(payload), casInfo), payload...)
 }
@@ -531,7 +531,7 @@ func WriteExecute(
 	}
 	w := newPacketWriter()
 	w.writeByte(FuncExecute)
-	w.addInt(int32(queryHandle))
+	w.addInt(int32(queryHandle)) // #nosec G115 -- query handles are issued by the CAS as signed INTs (parsed with parseInt), so they fit int32
 	w.addByte(ExecuteNormal)
 	w.addInt(0) // max_col_size
 	w.addInt(0) // max_row_size
@@ -655,30 +655,30 @@ func encodeOneParam(w *PacketWriter, arg driver.Value) {
 		w.writeDouble(v)
 	case string:
 		encoded := []byte(v)
-		w.writeInt(int32(1 + len(encoded) + 1)) // type + utf8 + null byte
+		w.writeInt(int32(1 + len(encoded) + 1)) // #nosec G115 -- type + utf8 + null byte; the string is part of the request payload, which conn.roundTrip caps at MaxInt32 bytes (checkRequestLength) before anything is sent
 		w.writeByte(TypeString)
 		w.writeRawBytes(encoded)
 		w.writeByte(0x00)
 	case []byte:
-		w.writeInt(int32(1 + len(v))) // type + raw bytes
+		w.writeInt(int32(1 + len(v))) // #nosec G115 -- type + raw bytes; v is part of the request payload, which conn.roundTrip caps at MaxInt32 bytes (checkRequestLength) before anything is sent
 		w.writeByte(TypeVarBit)
 		w.writeRawBytes(v)
 	case time.Time:
 		v = v.UTC()
 		w.writeInt(1 + SizeDatetime) // type + 7×int16
 		w.writeByte(TypeDatetime)
-		w.writeShort(int16(v.Year()))
-		w.writeShort(int16(v.Month()))
-		w.writeShort(int16(v.Day()))
-		w.writeShort(int16(v.Hour()))
-		w.writeShort(int16(v.Minute()))
-		w.writeShort(int16(v.Second()))
-		w.writeShort(int16(v.Nanosecond() / 1e6))
+		w.writeShort(int16(v.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; internal callers interpolate time.Time args into SQL client-side (stmt.sqlForExecLocked) and call WriteExecute with nil args; external callers of the exported WriteExecute can still send an out-of-range year (wrong date, not memory-unsafe)
+		w.writeShort(int16(v.Month()))            // #nosec G115 -- time.Time.Month() is 1..12
+		w.writeShort(int16(v.Day()))              // #nosec G115 -- time.Time.Day() is 1..31
+		w.writeShort(int16(v.Hour()))             // #nosec G115 -- time.Time.Hour() is 0..23
+		w.writeShort(int16(v.Minute()))           // #nosec G115 -- time.Time.Minute() is 0..59
+		w.writeShort(int16(v.Second()))           // #nosec G115 -- time.Time.Second() is 0..59
+		w.writeShort(int16(v.Nanosecond() / 1e6)) // #nosec G115 -- time.Time.Nanosecond() is 0..999999999, so milliseconds are 0..999
 	default:
 		// Fallback: stringify unknown types.
 		s := fmt.Sprintf("%v", v)
 		encoded := []byte(s)
-		w.writeInt(int32(1 + len(encoded) + 1))
+		w.writeInt(int32(1 + len(encoded) + 1)) // #nosec G115 -- the string is part of the request payload, which conn.roundTrip caps at MaxInt32 bytes (checkRequestLength) before anything is sent
 		w.writeByte(TypeString)
 		w.writeRawBytes(encoded)
 		w.writeByte(0x00)
