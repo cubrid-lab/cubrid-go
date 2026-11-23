@@ -51,11 +51,12 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@master
         with:
-          args: -exclude=G102,G115 ./...
+          args: -exclude=G102 ./...
           # G102 (bind to all interfaces): database driver must connect to
           #   user-specified hosts/ports.
-          # G115 (integer overflow conversion): CAS wire-protocol code requires
-          #   int↔uint and width-narrowing casts on every field. All values are
-          #   bounded by the protocol specification, making these safe.
+          # G115 (integer overflow conversion): NOT excluded — each reviewed
+          #   CAS wire-protocol conversion carries an inline
+          #   `// #nosec G115 -- <reason>`, and request payload size is
+          #   bounds-checked in conn.roundTrip, so new conversions are flagged.
           # G104 (unchecked error): NOT excluded — handled per-site with the
           #   idiomatic `_ =` prefix so new unhandled errors are still caught.

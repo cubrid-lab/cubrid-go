@@ -2,6 +2,7 @@ package cubrid
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"time"
 )
@@ -10,9 +11,25 @@ import (
 // 4 bytes DATA_LENGTH (big-endian) + 4 bytes CAS_INFO.
 func buildProtocolHeader(dataLength int, casInfo [SizeCASInfo]byte) []byte {
 	buf := make([]byte, SizeDataLength+SizeCASInfo)
-	binary.BigEndian.PutUint32(buf[:SizeDataLength], uint32(dataLength))
+	binary.BigEndian.PutUint32(buf[:SizeDataLength], uint32(dataLength)) // #nosec G115 -- dataLength is a non-negative len() that conn.roundTrip caps at MaxInt32 (checkRequestLength) before anything is sent
 	copy(buf[SizeDataLength:], casInfo[:])
 	return buf
+}
+
+// maxRequestPayload is the largest request payload the 4-byte CAS
+// DATA_LENGTH header field (and the int32 length prefixes inside it) can carry.
+const maxRequestPayload = math.MaxInt32
+
+// checkRequestLength rejects a framed request whose payload (everything after
+// DATA_LENGTH and CAS_INFO) does not fit maxRequestPayload. Every int32 length
+// field in a request describes a part of that payload, so this one check also
+// bounds them.
+func checkRequestLength(packetLen int64) error {
+	if payload := packetLen - SizeDataLength - SizeCASInfo; payload > maxRequestPayload {
+		return &ProgrammingError{CubridError{Code: -1,
+			Message: fmt.Sprintf("request payload of %d bytes exceeds the CAS protocol limit of %d bytes", payload, int64(maxRequestPayload))}}
+	}
+	return nil
 }
 
 // parseProtocolHeader parses an 8-byte protocol header.
@@ -40,19 +57,19 @@ func (w *PacketWriter) writeByte(v byte) {
 
 func (w *PacketWriter) writeShort(v int16) {
 	b := make([]byte, SizeShort)
-	binary.BigEndian.PutUint16(b, uint16(v))
+	binary.BigEndian.PutUint16(b, uint16(v)) // #nosec G115 -- bit-preserving two's-complement reinterpretation; CAS SHORT is a signed big-endian 16-bit field
 	w.buf = append(w.buf, b...)
 }
 
 func (w *PacketWriter) writeInt(v int32) {
 	b := make([]byte, SizeInt)
-	binary.BigEndian.PutUint32(b, uint32(v))
+	binary.BigEndian.PutUint32(b, uint32(v)) // #nosec G115 -- bit-preserving two's-complement reinterpretation; CAS INT is a signed big-endian 32-bit field
 	w.buf = append(w.buf, b...)
 }
 
 func (w *PacketWriter) writeLong(v int64) {
 	b := make([]byte, SizeLong)
-	binary.BigEndian.PutUint64(b, uint64(v))
+	binary.BigEndian.PutUint64(b, uint64(v)) // #nosec G115 -- bit-preserving two's-complement reinterpretation; CAS BIGINT is a signed big-endian 64-bit field
 	w.buf = append(w.buf, b...)
 }
 
@@ -94,7 +111,7 @@ func (w *PacketWriter) writeFixedString(s string, length int) {
 // Format: int32(len+1) + bytes + 0x00
 func (w *PacketWriter) writeNullTermString(s string) {
 	encoded := []byte(s)
-	w.writeInt(int32(len(encoded) + 1))
+	w.writeInt(int32(len(encoded) + 1)) // #nosec G115 -- the string is part of the request payload, which conn.roundTrip caps at MaxInt32 bytes (checkRequestLength) before anything is sent
 	w.buf = append(w.buf, encoded...)
 	w.buf = append(w.buf, 0x00)
 }
@@ -139,7 +156,7 @@ func (w *PacketWriter) addDouble(v float64) {
 
 // addBytes writes int32(len) + raw bytes.
 func (w *PacketWriter) addBytes(v []byte) {
-	w.writeInt(int32(len(v)))
+	w.writeInt(int32(len(v))) // #nosec G115 -- v is part of the request payload, which conn.roundTrip caps at MaxInt32 bytes (checkRequestLength) before anything is sent
 	w.buf = append(w.buf, v...)
 }
 
@@ -151,25 +168,25 @@ func (w *PacketWriter) addNull() {
 // addDatetime writes a length-prefixed datetime value (7 x int16 = 14 bytes).
 func (w *PacketWriter) addDatetime(t time.Time) {
 	w.writeInt(SizeDatetime)
-	w.writeShort(int16(t.Year()))
-	w.writeShort(int16(t.Month()))
-	w.writeShort(int16(t.Day()))
-	w.writeShort(int16(t.Hour()))
-	w.writeShort(int16(t.Minute()))
-	w.writeShort(int16(t.Second()))
-	w.writeShort(int16(t.Nanosecond() / 1e6))
+	w.writeShort(int16(t.Year()))             // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; the driver interpolates time.Time args into SQL client-side and never calls this writer with caller-supplied times
+	w.writeShort(int16(t.Month()))            // #nosec G115 -- time.Time.Month() is 1..12
+	w.writeShort(int16(t.Day()))              // #nosec G115 -- time.Time.Day() is 1..31
+	w.writeShort(int16(t.Hour()))             // #nosec G115 -- time.Time.Hour() is 0..23
+	w.writeShort(int16(t.Minute()))           // #nosec G115 -- time.Time.Minute() is 0..59
+	w.writeShort(int16(t.Second()))           // #nosec G115 -- time.Time.Second() is 0..59
+	w.writeShort(int16(t.Nanosecond() / 1e6)) // #nosec G115 -- time.Time.Nanosecond() is 0..999999999, so milliseconds are 0..999
 }
 
 // addDate writes a datetime with zeroed time fields.
 func (w *PacketWriter) addDate(t time.Time) {
 	w.writeInt(SizeDatetime)
-	w.writeShort(int16(t.Year()))
-	w.writeShort(int16(t.Month()))
-	w.writeShort(int16(t.Day()))
-	w.writeShort(0) // hour
-	w.writeShort(0) // minute
-	w.writeShort(0) // second
-	w.writeShort(0) // millisecond
+	w.writeShort(int16(t.Year()))  // #nosec G115 -- CUBRID DATE/DATETIME years are 1..9999 and fit int16; the driver interpolates time.Time args into SQL client-side and never calls this writer with caller-supplied times
+	w.writeShort(int16(t.Month())) // #nosec G115 -- time.Time.Month() is 1..12
+	w.writeShort(int16(t.Day()))   // #nosec G115 -- time.Time.Day() is 1..31
+	w.writeShort(0)                // hour
+	w.writeShort(0)                // minute
+	w.writeShort(0)                // second
+	w.writeShort(0)                // millisecond
 }
 
 // addCacheTime writes a length-prefixed cache time (two zero int32s).
@@ -200,19 +217,19 @@ func (r *PacketReader) parseByte() byte {
 }
 
 func (r *PacketReader) parseShort() int16 {
-	v := int16(binary.BigEndian.Uint16(r.buf[r.offset:]))
+	v := int16(binary.BigEndian.Uint16(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS SHORT (two's complement)
 	r.offset += SizeShort
 	return v
 }
 
 func (r *PacketReader) parseInt() int32 {
-	v := int32(binary.BigEndian.Uint32(r.buf[r.offset:]))
+	v := int32(binary.BigEndian.Uint32(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS INT (two's complement)
 	r.offset += SizeInt
 	return v
 }
 
 func (r *PacketReader) parseLong() int64 {
-	v := int64(binary.BigEndian.Uint64(r.buf[r.offset:]))
+	v := int64(binary.BigEndian.Uint64(r.buf[r.offset:])) // #nosec G115 -- bit-preserving decode of a signed CAS BIGINT (two's complement)
 	r.offset += SizeLong
 	return v
 }
